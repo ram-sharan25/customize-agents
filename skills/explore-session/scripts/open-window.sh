@@ -25,6 +25,11 @@
 #     (agent-sessions-tmux.el does the same; `new-window -e` cannot unset and
 #     tmux replaces a `-e PATH=`).
 #   * Outside tmux there is nothing to open a window in: exit 2, do nothing.
+#   * When the parent runs in a terminal the Emacs agent-sessions dashboard
+#     opened ($EMACS_AGENT_SESSION_ID set), Emacs is asked to open the window
+#     (rsr/agent-sessions-explore-spawn), so the child gets a dashboard row of
+#     its own, nested under the parent; anything short of success falls back
+#     to plain tmux here.  Same command, same environment either way.
 #
 # Codex is deferred: add a `codex)` case to child_command below when the CLI
 # is on PATH (codex fork <id> for --fork; `codex queue` for the notice).
@@ -129,17 +134,21 @@ EXPLORE_SLUG EXPLORE_DIR EXPLORE_PARENT_AGENT EXPLORE_PARENT_TMUX
 EXPLORE_PARENT_PID EXPLORE_PARENT_SESSION_ID EXPLORE_PARENT_NAME
 EXPLORE_PARENT_SOCKET"
 
-set -- env
-for v in $unset_vars; do set -- "$@" -u "$v"; done
-set -- "$@" "EXPLORE_SLUG=$slug" "EXPLORE_DIR=$dir" \
-  "EXPLORE_PARENT_AGENT=$agent" "EXPLORE_PARENT_TMUX=$parent_tmux"
+# The child's own variables, one KEY=VALUE per line.  Both ways of opening the
+# window below inject exactly this list.
+child_env="EXPLORE_SLUG=$slug
+EXPLORE_DIR=$dir
+EXPLORE_PARENT_AGENT=$agent
+EXPLORE_PARENT_TMUX=$parent_tmux"
+add_env() { child_env="$child_env
+$1"; }
 case "$agent" in
   claude)
-    [ -z "${CLAUDE_PID:-}" ] || set -- "$@" "EXPLORE_PARENT_PID=$CLAUDE_PID"
+    [ -z "${CLAUDE_PID:-}" ] || add_env "EXPLORE_PARENT_PID=$CLAUDE_PID"
     [ -z "${CLAUDE_CODE_SESSION_ID:-}" ] ||
-      set -- "$@" "EXPLORE_PARENT_SESSION_ID=$CLAUDE_CODE_SESSION_ID"
+      add_env "EXPLORE_PARENT_SESSION_ID=$CLAUDE_CODE_SESSION_ID"
     if [ -n "${CLAUDE_PID:-}" ] && pname=$("$(dirname -- "$0")/parent-address.sh" --field name 2>/dev/null); then
-      [ -z "$pname" ] || set -- "$@" "EXPLORE_PARENT_NAME=$pname"
+      [ -z "$pname" ] || add_env "EXPLORE_PARENT_NAME=$pname"
     fi ;;
 esac
 # Extra --env entries (the pi extension passes its inbox socket this way).
@@ -147,19 +156,61 @@ oldifs=$IFS; IFS='
 '
 for kv in $envs; do
   [ -n "$kv" ] || continue
-  case "$kv" in *=*) set -- "$@" "$kv" ;; *) IFS=$oldifs; die "--env needs KEY=VALUE: $kv" 2 ;; esac
+  case "$kv" in *=*) add_env "$kv" ;; *) IFS=$oldifs; die "--env needs KEY=VALUE: $kv" 2 ;; esac
 done
 IFS=$oldifs
-set -- "$@" "$shell" -l -c "$window_cmd"
 
 # --- Open the window --------------------------------------------------------
-if [ -n "$focus" ]; then
-  out=$(tmux new-window -t "=$session:" -n "$name" -c "$cwd" -P -F '#{window_id}	#{window_index}' "$@")
-else
-  out=$(tmux new-window -d -t "=$session:" -n "$name" -c "$cwd" -P -F '#{window_id}	#{window_index}' "$@")
-fi || die "tmux new-window failed"
-window=$(printf '%s' "$out" | cut -f1)
-index=$(printf '%s' "$out" | cut -f2)
+# Through Emacs when it owns the parent.  A parent that the agent-sessions
+# dashboard opened carries EMACS_AGENT_SESSION_ID; asking that Emacs to open
+# the window gives the child what plain tmux cannot: a tracked id of its own
+# (hooks, session log, restore, emacs-share), a dashboard row nested under the
+# parent, and brief.md attached to that row.  Emacs runs the same `env' list
+# and types this same command; only the opener differs.  Anything short of
+# success — no Emacs, no server, an id this Emacs does not know, code without
+# the entry point — falls back to plain tmux and says so on stderr.
+via=tmux
+elisp_esc() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
+elisp_unquote() { printf '%s' "$1" | sed -e 's/^"//' -e 's/"$//' -e 's/\\"/"/g' -e 's/\\\\/\\/g'; }
+open_through_emacs() {
+  [ -n "${EMACS_AGENT_SESSION_ID:-}" ] || return 1
+  command -v emacsclient >/dev/null 2>&1 || return 1
+  detached=nil; [ -n "$focus" ] || detached=t
+  reply=$(emacsclient -e "(rsr/agent-sessions-explore-spawn \
+\"$(elisp_esc "$EMACS_AGENT_SESSION_ID")\" \"$(elisp_esc "$session")\" \
+\"$(elisp_esc "$cwd")\" \"$(elisp_esc "$name")\" \"$(elisp_esc "$dir")\" \
+\"$(elisp_esc "$slug")\" \"$(elisp_esc "$cmd")\" \"$(elisp_esc "$child_env")\" \
+$detached)" 2>&1) || {
+    printf 'open-window: Emacs did not answer (%s); opening with plain tmux\n' "$reply" >&2
+    return 1
+  }
+  reply=$(elisp_unquote "$reply")
+  case "$reply" in
+    Opened\ @*) ;;
+    *) printf 'open-window: Emacs declined (%s); opening with plain tmux\n' "$reply" >&2
+       return 1 ;;
+  esac
+  window=$(printf '%s' "$reply" | cut -d' ' -f2)
+  via="emacs (terminal $(printf '%s' "$reply" | cut -d' ' -f3))"
+  index=$(tmux display-message -p -t "$window" '#{window_index}' 2>/dev/null) || index='?'
+}
+
+if ! open_through_emacs; then
+  set -- env
+  for v in $unset_vars; do set -- "$@" -u "$v"; done
+  oldifs=$IFS; IFS='
+'
+  for kv in $child_env; do set -- "$@" "$kv"; done
+  IFS=$oldifs
+  set -- "$@" "$shell" -l -c "$window_cmd"
+  if [ -n "$focus" ]; then
+    out=$(tmux new-window -t "=$session:" -n "$name" -c "$cwd" -P -F '#{window_id}	#{window_index}' "$@")
+  else
+    out=$(tmux new-window -d -t "=$session:" -n "$name" -c "$cwd" -P -F '#{window_id}	#{window_index}' "$@")
+  fi || die "tmux new-window failed"
+  window=$(printf '%s' "$out" | cut -f1)
+  index=$(printf '%s' "$out" | cut -f2)
+fi
 
 # Tag both ends so either side can find the other later, without any database.
 tmux set-option -w -t "$window" @explore-parent "$parent_tmux" >/dev/null 2>&1 || true
@@ -171,6 +222,7 @@ tmux set-option -w -t "$parent_window" @explore-children "${children:+$children 
 
 cat <<EOF
 opened: tmux window $window (index $index, name $name) in session $session
+via:    $via
 child:  $agent ($mode) in $cwd
 brief:  $brief
 dir:    $dir

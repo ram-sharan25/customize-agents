@@ -236,16 +236,20 @@ therefore address the client, not the session."
 
 ;;; Windows
 
-(defun rsr/agent-tmux-new-window (session dir env)
+(defun rsr/agent-tmux-new-window (session dir env &optional name detached)
   "Open a window in SESSION at DIR running the user's shell; return its id.
 ENV is a list of \"VAR=VALUE\" strings set in the window.  Variables in
-`rsr/agent-tmux-unset-environment' are removed first.
+`rsr/agent-tmux-unset-environment' are removed first.  NAME, when non-nil,
+names the window; DETACHED non-nil leaves SESSION's current window as it is
+instead of switching to the new one (`new-window -d').
 
 ENV is applied by `env' in the window's command rather than with
 `new-window -e': tmux replaces PATH with the calling client's, so a PATH
 given with -e never reaches the shell."
   (apply #'rsr/agent-tmux--output
          `("new-window" "-P" "-F" "#{window_id}" "-t" ,(concat "=" session ":")
+           ,@(and detached '("-d"))
+           ,@(and name (list "-n" name))
            "-c" ,dir
            "env" ,@(mapcan (lambda (var) (list "-u" var))
                            rsr/agent-tmux-unset-environment)

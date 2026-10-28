@@ -9,7 +9,7 @@ description: >-
   the findings to the parent", "send it to the parent"; and when the user in
   the parent says "bring in the exploration", "go ahead and bring it in",
   "pull in the findings". Claude Code and Pi; needs tmux.
-allowed-tools: Bash(${CLAUDE_SKILL_DIR}/scripts/explore-dir.sh *) Bash(${CLAUDE_SKILL_DIR}/scripts/open-window.sh *) Bash(${CLAUDE_SKILL_DIR}/scripts/parent-address.sh *) Bash(tmux show-option *) Bash(tmux display-message *)
+allowed-tools: Bash(${CLAUDE_SKILL_DIR}/scripts/explore-dir.sh *) Bash(${CLAUDE_SKILL_DIR}/scripts/open-window.sh *) Bash(${CLAUDE_SKILL_DIR}/scripts/parent-address.sh *) Bash(tmux show-option *) Bash(tmux display-message *) Bash(emacs-share file *)
 ---
 
 # explore-session
@@ -19,7 +19,9 @@ session. The child starts from a **curated brief** (topic, minimal context,
 file pointers), not from this transcript. A full-context fork happens only
 when the user explicitly says "fork". Findings live in files; the parent gets
 a one-line notice first and reads a 12-line summary only when told to.
-No Emacs, no database: tmux plus each agent's own features.
+No database: tmux plus each agent's own features. When the parent runs in a
+terminal the Emacs agent-sessions dashboard opened, the child is tracked
+there too (see Mechanics); when it does not, nothing changes.
 
 Scripts live in `${CLAUDE_SKILL_DIR}/scripts/` (Claude substitutes that; in
 Pi it is the directory of this file, `~/.pi/agent/skills/explore-session`, and
@@ -75,7 +77,8 @@ files, optional slug / task_dir / fork / focus / start_now). It does steps
    ${CLAUDE_SKILL_DIR}/scripts/open-window.sh --agent claude --slug <slug> --dir "$DIR" [--fork] [--no-focus]
    ```
    It refuses (exit 2) when this session is not inside tmux; tell the user
-   and do nothing else.
+   and do nothing else. Its `via:` line says whether Emacs or plain tmux
+   opened the window; a note on stderr explains a fallback. Either is fine.
 5. Reply in two or three lines: the window index/name, `$DIR`, and that you
    will keep working here. Do not read the brief back. Do not watch the child.
 
@@ -92,7 +95,16 @@ files, optional slug / task_dir / fork / focus / start_now). It does steps
    - Pi: call the `report_to_parent` tool (it checks `summary.md` exists,
      sends the line over the parent's inbox socket, and leaves a copy in the
      inbox directory if the parent is unreachable).
-4. Tell the user it was sent. Stay here; the user may continue with you.
+4. If `EMACS_AGENT_SESSION_ID` is set in your environment (Emacs opened this
+   window), also hand the files to the dashboard:
+   ```
+   emacs-share file "$EXPLORE_DIR/findings.md" "exploration <slug>: findings"
+   emacs-share file --to "$EMACS_AGENT_PARENT" "$EXPLORE_DIR/summary.md" "exploration <slug>: ready to bring in"
+   ```
+   `findings.md` lands under your own row; `summary.md` under the parent's,
+   highlighted until the user opens it. If either command fails, tell the
+   user in one line and carry on; the notice above already went out.
+5. Tell the user it was sent. Stay here; the user may continue with you.
 
 ## C. Bring in (parent; only when the user says so)
 
@@ -128,5 +140,18 @@ any file and do not summarize anything yet.
 - Window options `@explore-parent`, `@explore-dir`, `@explore-slug`,
   `@explore-agent` on the child and `@explore-children` on the parent link
   the two without any database.
+- Emacs, when it owns the parent: a parent terminal that the agent-sessions
+  dashboard opened has `EMACS_AGENT_SESSION_ID`, and `open-window.sh` then
+  asks Emacs (`rsr/agent-sessions-explore-spawn`) to open the window instead
+  of running `tmux new-window` itself. The child gets its own tracked id
+  (hooks, session log, restore, `emacs-share`), a row titled
+  `explore: <slug>` nested under the parent, `brief.md` attached to it, and
+  `EMACS_AGENT_PARENT` (the parent's terminal id) for step B.4. Same command
+  and environment as the plain path; `--no-focus` additionally leaves the
+  parent's window selected. Any failure falls back to plain tmux. The one-line
+  notice stays native (SendMessage / Pi socket) on purpose: `emacs-agent`
+  mail would paste the same line into the parent's composer a second time.
+  If that is ever wanted, it is one more line in B.3:
+  `emacs-agent send --to "$EMACS_AGENT_PARENT" --type done --subject "exploration <slug>" --files "$EXPLORE_DIR/summary.md"`.
 - Codex: deferred. `open-window.sh` has the extension point (`child_command`);
   the return path would be `codex queue --thread <parent> --message "<notice>"`.

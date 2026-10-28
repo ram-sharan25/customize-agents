@@ -45,6 +45,15 @@ the only binder.  A worker learns its role and its coordinator from the
 environment rather than from its launch command because the id it is addressed
 by is minted by that same advice, and so is not known to the caller yet.")
 
+(defvar rsr/agent-sessions--tmux-window-options nil
+  "Options for the next tmux window `rsr/agent-sessions--tmux-open' makes.
+A plist: `:name' is the tmux window name; `:detached' non-nil leaves the
+session's current window where it is (`new-window -d'); `:silent' non-nil
+skips showing the session in Emacs afterwards.  Bound around a
+terminal-creating call, for the reason `rsr/agent-sessions--extra-terminal-env'
+is: the backend is reached through `rsr/agent-sessions--create-terminal',
+which has no argument to carry them.  See `rsr/agent-sessions-explore-spawn'.")
+
 (defun rsr/agent-sessions--terminal-environment (id)
   "Environment entries to inject into a session terminal identified by ID.
 The PATH entry is built from the PATH the terminal was going to inherit anyway
@@ -4213,10 +4222,13 @@ BUFNAME is the desired buffer name.  Loads the backend package lazily."
 The window gets the same environment the other backends inject, so hooks and
 `emacs-share' find this session; the proxy carries its dashboard state."
   (pcase-let* ((`(,session . ,_root) (rsr/agent-tmux-target dir))
+               (options rsr/agent-sessions--tmux-window-options)
                (id (format "%d-%d" (emacs-pid) (cl-incf rsr/agent-session-counter)))
                (window (and (rsr/agent-tmux-ensure-session session dir)
                             (rsr/agent-tmux-new-window
-                             session dir (rsr/agent-sessions--terminal-environment id)))))
+                             session dir (rsr/agent-sessions--terminal-environment id)
+                             (plist-get options :name)
+                             (plist-get options :detached)))))
     (unless window
       (error "Could not open a tmux window in session %s" session))
     (rsr/agent-tmux-tag-window window id)
@@ -4229,8 +4241,10 @@ The window gets the same environment the other backends inject, so hooks and
         (add-hook 'kill-buffer-hook #'rsr/agent-session--cleanup nil t))
       (rsr/agent-sessions--log-open buf)
       ;; Like the other backends, select the new terminal: show the session,
-      ;; whose current window `new-window' has just made this one.
-      (rsr/agent-tmux-show session dir)
+      ;; whose current window `new-window' has just made this one.  A caller
+      ;; acting for an agent rather than the user asks for `:silent' instead.
+      (unless (plist-get options :silent)
+        (rsr/agent-tmux-show session dir))
       (rsr/agent-sessions--refresh-if-visible)
       buf)))
 
@@ -6153,6 +6167,85 @@ stray worktree or branch behind."
                     (if (string-empty-p model) type (format "%s, %s" type model))
                     (abbreviate-file-name dir) label brief
                     (if trust-note (concat "\nNote: " trust-note) "")))))))))
+
+;;;; Exploration children (called from skills/explore-session/scripts/open-window.sh)
+
+(defun rsr/agent-sessions-explore-spawn (parent-id session cwd name dir slug
+                                                   command env &optional detached)
+  "Open an exploration child window for the agent in terminal PARENT-ID.
+The explore-session skill's `open-window.sh' calls this over emacsclient when
+the parent runs in a terminal Emacs opened, so the child gets what only Emacs
+can give it: a tracked id in its environment (hooks, the session log, restore,
+`emacs-share'), a proxy row nested under the parent, and its brief as an
+attachment.  The script keeps every other decision — the child's command, its
+environment and the `@explore-*' window options — so that its plain-tmux
+fallback opens exactly the same child.
+
+SESSION is the parent's tmux session, which the child must share (the skill's
+rule), so the repository-derived target is bypassed.  CWD is the child's
+working directory, NAME the tmux window name (also the proxy's name), DIR the
+exploration directory holding `brief.md', SLUG the exploration's slug, COMMAND
+the shell line that starts the child, and ENV its extra `VAR=VALUE' entries,
+one per line.  DETACHED non-nil leaves the parent's window selected.  Emacs's
+own window layout is never rearranged: the user is in a tmux client, not here.
+Returns a string for the caller to print, \"Opened WINDOW TERMINAL-ID\" on
+success; failures are returned as text because emacsclient's printed value is
+the script's only channel back."
+  (let* ((parent (rsr/agent-sessions--session-for-id parent-id))
+         (cwd (and cwd (not (string-empty-p cwd))
+                   (file-name-as-directory (expand-file-name cwd))))
+         (brief (and dir (not (string-empty-p dir))
+                     (expand-file-name "brief.md" dir)))
+         (slug (string-trim (or slug "")))
+         (name (if (or (null name) (string-empty-p name))
+                   (concat "explore-" slug)
+                 name))
+         (env (and env (split-string env "\n" t))))
+    (cond
+     ((null parent)
+      (format "No Emacs terminal registered for session id %s" parent-id))
+     ((or (null session) (string-empty-p session))
+      "No tmux session named for the child")
+     ((or (null cwd) (not (file-directory-p cwd)))
+      (format "No such directory for the child: %s" (or cwd "")))
+     ((or (null brief) (not (file-exists-p brief)))
+      (format "No brief at %s (write it first)" (or brief "")))
+     ((string-empty-p slug) "Refusing to open an exploration with no slug")
+     ((string-empty-p (string-trim (or command "")))
+      "Refusing to open an exploration with an empty command")
+     (t
+      (let ((buf (save-window-excursion
+                   (let ((rsr/agent-sessions-terminal 'tmux)
+                         (rsr/agent-tmux--target (cons session cwd))
+                         (rsr/agent-sessions--tmux-window-options
+                          (list :name name :detached detached :silent t))
+                         (rsr/agent-sessions--extra-terminal-env
+                          (append env
+                                  (list (format "EMACS_AGENT_PARENT=%s" parent-id)))))
+                     (condition-case err
+                         (rsr/agent-sessions--create-terminal cwd name)
+                       (error (error-message-string err)))))))
+        (cond
+         ((stringp buf) buf)
+         ((not (buffer-live-p buf)) "Could not create a terminal for the exploration")
+         (t
+          (let ((parent-sid (plist-get parent :agent-session-id))
+                (child-id (buffer-local-value 'rsr/agent-session-id buf)))
+            (with-current-buffer buf
+              (when parent-sid
+                (setq-local rsr/agent-session--branched-from
+                            (cons parent-sid
+                                  (rsr/agent-sessions--session-short-label parent))))
+              (setq-local rsr/agent-session-title-override
+                          (format "explore: %s" slug)))
+            ;; The brief is what the child was told; it belongs under the
+            ;; child, and reading it there clears it like any attachment.
+            (rsr/agent-sessions--share-file
+             (rsr/agent-sessions--session-for-id child-id) brief "exploration brief")
+            (rsr/agent-sessions--terminal-send buf command)
+            (rsr/agent-sessions--refresh-if-visible)
+            (format "Opened %s %s"
+                    (buffer-local-value 'rsr/agent-tmux-window buf) child-id)))))))))
 
 (defun rsr/agent-orchestration--logged-recipient (value &optional by-agent-session)
   "Return the most recent resumable session matching VALUE.

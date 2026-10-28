@@ -50,7 +50,12 @@ other link to the parent than what is written here.
        exploration {{slug}} done — ready to bring in ({{dir}})
 
    {{report_instruction}}
-3. Tell the user it was sent, and stay available here. The parent will read
+3. If `EMACS_AGENT_SESSION_ID` is set in your environment, also run
+   `emacs-share file "{{dir}}/findings.md" "exploration {{slug}}: findings"`
+   and `emacs-share file --to "$EMACS_AGENT_PARENT" "{{dir}}/summary.md"
+   "exploration {{slug}}: ready to bring in"`, so the files show on the
+   user's dashboard. If that fails, say so in one line and carry on.
+4. Tell the user it was sent, and stay available here. The parent will read
    `summary.md` only when the user tells it to bring the exploration in.
 
 ## summary.md format

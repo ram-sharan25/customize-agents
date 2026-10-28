@@ -477,4 +477,136 @@ Runs on its own server (empty config, private socket) and kills it after."
           (let ((kill-buffer-query-functions nil)) (kill-buffer proxy))
           (should-not (gethash "1-5" rsr/agent-session-id->buffer)))))))
 
+;;; Exploration children (explore-session's open-window.sh through Emacs)
+
+(ert-deftest rsr/agent-tmux-new-window-takes-name-and-detached ()
+  (rsr/agent-tmux-test--with-fake #'rsr/agent-tmux-test--standard
+    (rsr/agent-tmux-new-window "s" "/tmp/" '("A=1") "win" t)
+    (let ((argv (caar (rsr/agent-tmux-test--called "new-window"))))
+      (should (equal (seq-take argv 7)
+                     '("new-window" "-P" "-F" "#{window_id}" "-t" "=s:" "-d")))
+      (should (equal (nth (1+ (seq-position argv "-n")) argv) "win"))
+      (should (member "A=1" argv)))
+    (rsr/agent-tmux-new-window "s" "/tmp/" nil)
+    (let ((argv (caar (last (rsr/agent-tmux-test--called "new-window")))))
+      (should-not (member "-d" argv))
+      (should-not (member "-n" argv)))))
+
+(defvar rsr/agent-tmux-test--window-counter 10
+  "Last window id handed out by `rsr/agent-tmux-test--explore-responder'.")
+
+(defun rsr/agent-tmux-test--explore-responder (args)
+  "The standard responder, except that every new window gets its own id."
+  (if (equal (car args) "new-window")
+      (format "@%d\n" (cl-incf rsr/agent-tmux-test--window-counter))
+    (rsr/agent-tmux-test--standard args)))
+
+(defmacro rsr/agent-tmux-test--with-explore (&rest body)
+  "Run BODY with a tracked parent proxy and an exploration directory.
+Binds PARENT, PARENT-ID (its terminal id, registered with agent session id
+\"parent-sid\"), DIR (holding brief.md) and SHOWN (set when Emacs would have
+shown the tmux session)."
+  (declare (indent 0) (debug t))
+  `(let ((rsr/agent-tmux-test--window-counter 10)
+         (rsr/agent-sessions-file-snapshot-directory
+          (make-temp-file "agent-sessions-explore-snap-" t))
+         (rsr/agent-sessions--shared-files nil)
+         (rsr/agent-sessions--shared-paths nil)
+         (dir (file-name-as-directory (make-temp-file "explore-" t)))
+         (shown nil))
+     (ignore shown)
+     (with-temp-file (expand-file-name "brief.md" dir)
+       (insert "# Exploration brief: x\n"))
+     (rsr/agent-tmux-test--with-fake #'rsr/agent-tmux-test--explore-responder
+       (let* ((parent (rsr/agent-tmux-test--open-proxy))
+              (parent-id (buffer-local-value 'rsr/agent-session-id parent)))
+         (ignore parent)
+         (puthash parent-id (list :buffer parent :agent-type "claude"
+                                  :agent-session-id "parent-sid" :status 'stopped)
+                  rsr/agent-sessions)
+         (cl-letf (((symbol-function 'rsr/agent-tmux-show)
+                    (lambda (&rest _) (setq shown t))))
+           (unwind-protect (progn ,@body)
+             (remhash parent-id rsr/agent-sessions)))))))
+
+(ert-deftest rsr/agent-tmux-explore-spawn-opens-a-tracked-child-under-the-parent ()
+  (rsr/agent-tmux-test--with-explore
+    (let* ((command "claude -n 'explore-x' \"$(cat brief.md)\"")
+           (reply (rsr/agent-sessions-explore-spawn
+                   parent-id "study" dir "explore-x" dir "x" command
+                   (format "EXPLORE_SLUG=x\nEXPLORE_DIR=%s" dir)))
+           (argv (caar (last (rsr/agent-tmux-test--called "new-window"))))
+           (child (seq-find (lambda (b)
+                              (equal (buffer-local-value 'rsr/agent-tmux-window b) "@12"))
+                            (rsr/agent-tmux-proxies)))
+           (child-id (and child (buffer-local-value 'rsr/agent-session-id child))))
+      (should child)
+      (should (equal reply (format "Opened @12 %s" child-id)))
+      ;; The parent's tmux session, not one derived from the directory; the
+      ;; window is named and, with focus, selected.
+      (should (member "=study:" argv))
+      (should (equal (nth (1+ (seq-position argv "-n")) argv) "explore-x"))
+      (should-not (member "-d" argv))
+      ;; The script's environment, plus what only Emacs can add.
+      (should (member "EXPLORE_SLUG=x" argv))
+      (should (member (format "EXPLORE_DIR=%s" dir) argv))
+      (should (member (format "EMACS_AGENT_PARENT=%s" parent-id) argv))
+      (should (member (format "EMACS_AGENT_SESSION_ID=%s" child-id) argv))
+      ;; Nested under the parent, titled by slug, named after the window.
+      (should (equal (car (buffer-local-value 'rsr/agent-session--branched-from child))
+                     "parent-sid"))
+      (should (equal (buffer-local-value 'rsr/agent-session-title-override child)
+                     "explore: x"))
+      (should (string-prefix-p "explore-x-tmux" (buffer-name child)))
+      (should (equal (plist-get (rsr/agent-sessions--terminal-session child)
+                                :branched-from)
+                     (buffer-local-value 'rsr/agent-session--branched-from child)))
+      ;; The brief is attached to the child, unread.
+      (let ((files (rsr/agent-sessions--session-files
+                    (rsr/agent-sessions--session-for-id child-id))))
+        (should (equal (mapcar (lambda (f) (plist-get f :path)) files)
+                       (list (expand-file-name "brief.md" dir))))
+        (should (equal (plist-get (car files) :label) "exploration brief"))
+        (should-not (plist-get (car files) :visited-at)))
+      ;; The child's command is typed into the window; Emacs's own layout
+      ;; and the *tmux: S* buffer are left alone.
+      (should (seq-find (lambda (c)
+                          (equal (car c) (list "send-keys" "-t" "@12" "-l" "--" command)))
+                        rsr/agent-tmux-test--calls))
+      (should-not shown))))
+
+(ert-deftest rsr/agent-tmux-explore-spawn-detached-leaves-the-parent-window ()
+  (rsr/agent-tmux-test--with-explore
+    (should (string-prefix-p
+             "Opened @12 "
+             (rsr/agent-sessions-explore-spawn
+              parent-id "study" dir "" dir "x" "claude" "" t)))
+    (let ((argv (caar (last (rsr/agent-tmux-test--called "new-window")))))
+      (should (member "-d" argv))
+      ;; An empty NAME falls back to explore-<slug>.
+      (should (equal (nth (1+ (seq-position argv "-n")) argv) "explore-x")))
+    (should-not shown)))
+
+(ert-deftest rsr/agent-tmux-explore-spawn-refuses-bad-requests ()
+  (rsr/agent-tmux-test--with-explore
+    (should (string-prefix-p
+             "No Emacs terminal registered"
+             (rsr/agent-sessions-explore-spawn
+              "0-0" "study" dir "explore-x" dir "x" "claude" "")))
+    (should (string-prefix-p
+             "No brief"
+             (rsr/agent-sessions-explore-spawn
+              parent-id "study" dir "explore-x" (make-temp-file "nobrief-" t)
+              "x" "claude" "")))
+    (should (string-prefix-p
+             "No tmux session"
+             (rsr/agent-sessions-explore-spawn
+              parent-id "" dir "explore-x" dir "x" "claude" "")))
+    (should (string-prefix-p
+             "Refusing"
+             (rsr/agent-sessions-explore-spawn
+              parent-id "study" dir "explore-x" dir "x" "  " "")))
+    ;; Only the parent's own window was ever opened.
+    (should (= 1 (length (rsr/agent-tmux-test--called "new-window"))))))
+
 ;;; agent-sessions-tmux-test.el ends here

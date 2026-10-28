@@ -2,9 +2,13 @@
 # Hand a file, an external work link, or a workflow state to the human through
 # agent-sessions.
 #
-#   emacs-share file FILE [DESCRIPTION]
+#   emacs-share file [--to TERMINAL-ID] FILE [DESCRIPTION]
 #   emacs-share link linear|pr URL [LABEL]
 #   emacs-share state STATE|--clear
+#
+# `file --to ID' attaches the file to another session's row instead of this
+# one's: an exploration child hands its summary to the parent that opened it
+# (ID is in $EMACS_AGENT_PARENT there).
 #
 # `emacs-share-file' is a compatibility symlink to this command.  When invoked
 # under that name it keeps accepting the original FILE [DESCRIPTION] syntax.
@@ -17,7 +21,7 @@ usage() {
   if [ "$program" = "emacs-share-file" ]; then
     echo "Usage: emacs-share-file FILE [DESCRIPTION]"
   else
-    echo "Usage: emacs-share file FILE [DESCRIPTION]"
+    echo "Usage: emacs-share file [--to TERMINAL-ID] FILE [DESCRIPTION]"
     echo "       emacs-share link linear|pr URL [LABEL]"
     echo "       emacs-share state STATE|--clear"
   fi
@@ -67,11 +71,21 @@ fi
 
 case "$mode" in
   file)
+    to=""
+    if [ "${1:-}" = "--to" ]; then
+      to=${2:-}
+      [ -n "$to" ] || die "--to needs a terminal id"
+      shift 2
+    fi
     [ $# -ge 1 ] || { usage >&2; exit 2; }
     [ $# -le 2 ] || die "file accepts FILE and an optional DESCRIPTION"
     file=$1
     label=${2:-}
     [ -e "$file" ] || die "no such file: $file"
+    # With --to, the target is another terminal, so this process's own durable
+    # id (Codex) must not redirect the attachment back to the sender.
+    target=${to:-${EMACS_AGENT_SESSION_ID:-}}
+    [ -z "$to" ] || agent_session_id=""
 
     # Absolutize without depending on realpath/readlink -f, which differ
     # across platforms.  The dashboard outlives the caller's working directory.
@@ -85,7 +99,7 @@ case "$mode" in
     esac
 
     need_session
-    output=$(call "(rsr/agent-sessions-share-file \"$(esc "$EMACS_AGENT_SESSION_ID")\" \"$(esc "$absolute_path")\" \"$(esc "$label")\" \"$(esc "$agent_session_id")\")")
+    output=$(call "(rsr/agent-sessions-share-file \"$(esc "$target")\" \"$(esc "$absolute_path")\" \"$(esc "$label")\" \"$(esc "$agent_session_id")\")")
     case "$output" in
       Shared*) printf '%s\n' "$output" ;;
       *) die "$output" ;;

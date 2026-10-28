@@ -558,6 +558,45 @@ becomes the row's title override. The only addition is the `✉N` badge, which
 reads the in-memory mailbox — the render path stays off the database, as the
 rule above requires.
 
+**An exploration child is opened by Emacs when Emacs owns the parent, and by
+tmux otherwise.** The `explore-session` skill (`skills/explore-session/`) spins
+one tangent off into a new window of the parent's own tmux session, with no
+dependency on Emacs: its `open-window.sh` runs `tmux new-window` itself. A child
+opened that way never reaches the dashboard — no proxy, no `@agent-session-id`
+tag, and no `EMACS_AGENT_SESSION_ID` in its environment (tmux windows inherit
+the *server's* environment), so its hooks exit before forwarding and even a
+later reattach cannot recognise it. Adopting such a window afterwards does not
+help: the agent's environment is fixed by then, so it would be a row that never
+hears a hook. The split therefore has to happen at the moment the window is
+opened. When the parent's shell has `EMACS_AGENT_SESSION_ID`, the script asks
+`rsr/agent-sessions-explore-spawn` to open the window; when it has not, or
+Emacs does not answer, or this Emacs does not know the id, plain tmux opens
+exactly the same child. The script keeps ownership of everything that is not
+Emacs's to decide — the child's command, its environment, the `@explore-*`
+window options, the folder layout — and Emacs adds only what the agent cannot
+give itself: a tracked id in the environment, the proxy, the nesting and the
+brief as an attachment. That is the same line "Emacs owns only what an agent
+cannot do" draws for orchestration.
+
+Three details follow from that. The parent's tmux *session* is passed in and
+bound as `rsr/agent-tmux--target`, because the skill's rule is "same session as
+the parent" while `--tmux-open` would derive one from the child's directory (and,
+outside a git checkout, would stop to ask in the minibuffer — from an
+emacsclient call, with the agent waiting). The window is opened `:silent`, in a
+`save-window-excursion`, for the reason spawn is: the user is looking at a tmux
+client, and an agent's action must not rearrange Emacs; `--no-focus` maps to
+`new-window -d` on top. And the attachments split by reader: `brief.md` and
+`findings.md` go under the child (what it was told, what it found), while
+`summary.md` goes under the *parent* through `emacs-share file --to`, since an
+unread row under the parent is what "ready to bring in" looks like on this
+dashboard. The child's one-line notice stays on the agents' native channel
+(Claude's SendMessage, pi's socket) and is deliberately not also sent as
+`emacs-agent` mail: Claude mail is pasted into the recipient's composer and
+queue-submitted, which would deliver the same sentence twice and start a turn.
+If the user later wants the notice in the mailbox too, it is a single
+`emacs-agent send --to "$EMACS_AGENT_PARENT"` line in the skill's report step;
+nothing here needs to change.
+
 **The skill is a stub; the guide ships with the tool.** `/orca` (and `/orca
 --main`) tell an agent when to engage and to run `emacs-agent guide [--main]`;
 the guides themselves live next to the command and are symlinked, not copied,
