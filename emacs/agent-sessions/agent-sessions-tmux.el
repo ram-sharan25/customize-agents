@@ -1,0 +1,440 @@
+;;; agent-sessions-tmux.el --- tmux backend for agent-sessions -*- lexical-binding: t -*-
+
+;;; Commentary:
+
+;; Agents run as windows in a per-repository tmux session on the user's normal
+;; tmux server, so a session can be attached from Emacs, Ghostty or anywhere
+;; else.  Emacs shows each session through one ghostel buffer, *tmux: NAME*.
+;;
+;; agent-sessions identifies a session by an Emacs buffer and keeps its state in
+;; buffer-local variables.  A tmux agent has no buffer of its own, so it gets a
+;; *proxy*: a buffer in `rsr/agent-tmux-mode' that records the window (=@N=) and
+;; carries that state.  Everything above the terminal layer then works
+;; unchanged; this file supplies the terminal layer: windows, I/O, screen
+;; capture, liveness and display.
+;;
+;; Only windows created here are managed; other panes on the shared server are
+;; never touched.  Every tmux call goes through `rsr/agent-tmux--call', and a
+;; failing call (server down, window gone) reads as "no result", never as an
+;; error, so hooks and dashboard rendering cannot be broken by tmux.
+
+;;; Code:
+
+(require 'cl-lib)
+(require 'seq)
+(require 'subr-x)
+
+(defgroup rsr/agent-tmux nil
+  "tmux backend for agent-sessions."
+  :group 'tools)
+
+(defcustom rsr/agent-tmux-program "tmux"
+  "The tmux executable."
+  :type 'string)
+
+(defcustom rsr/agent-tmux-socket nil
+  "tmux socket name (tmux -L), or nil for the default server.
+Set it to keep a separate server, as tests and the test bed do."
+  :type '(choice (const :tag "Default server" nil) string))
+
+(defun rsr/agent-tmux--socket-args ()
+  "The tmux arguments that select `rsr/agent-tmux-socket'."
+  (and rsr/agent-tmux-socket (list "-L" rsr/agent-tmux-socket)))
+
+(defcustom rsr/agent-tmux-unset-environment
+  '("CLAUDECODE" "CLAUDE_CODE_ENTRYPOINT" "CLAUDE_CODE_CHILD_SESSION"
+    "PI_CODING_AGENT_DIR")
+  "Variables removed from a new window's environment.
+Windows inherit the tmux server's environment, which keeps whatever the
+process that started the server had.  A Claude child-session marker there
+turns off transcript saving in every Claude started in the window, and a stale
+`PI_CODING_AGENT_DIR' points pi at the wrong home."
+  :type '(repeat string))
+
+(defface rsr/agent-tmux-faint '((t :inherit shadow))
+  "Face for faint (SGR 2) text in a captured tmux screen.")
+
+(defvar-local rsr/agent-tmux-session nil
+  "The tmux session this buffer belongs to.
+Set in proxy buffers and in the ghostel buffer attached to the session.")
+
+(defvar-local rsr/agent-tmux-window nil
+  "The tmux window id (\"@N\") a proxy buffer stands in for.")
+
+(defvar-local rsr/agent-tmux--window-gone nil
+  "Non-nil once the proxy's window is known to have closed.
+Killing such a proxy must not try to kill the window again.")
+
+;;; Calling tmux
+
+(defun rsr/agent-tmux--call (args &optional input)
+  "Run tmux with ARGS, feeding INPUT on stdin when non-nil.
+Return (STATUS . OUTPUT); STATUS is -1 when tmux could not be run."
+  (with-temp-buffer
+    (when input (insert input))
+    (let ((status (condition-case nil
+                      (apply #'call-process-region (point-min) (point-max)
+                             rsr/agent-tmux-program t t nil
+                             (append (rsr/agent-tmux--socket-args) args))
+                    (error -1))))
+      (cons status (buffer-string)))))
+
+(defun rsr/agent-tmux--ok (&rest args)
+  "Run tmux with ARGS; return non-nil on success."
+  (eq 0 (car (rsr/agent-tmux--call args))))
+
+(defun rsr/agent-tmux--output (&rest args)
+  "Run tmux with ARGS; return its output without the final newline, or nil."
+  (let ((result (rsr/agent-tmux--call args)))
+    (and (eq 0 (car result)) (string-trim-right (cdr result) "\n"))))
+
+;;; Sessions
+
+(defun rsr/agent-tmux-session-name (string)
+  "STRING made safe as a tmux session name (`.', `:' and spaces become `-')."
+  (replace-regexp-in-string "[.: ]" "-" string))
+
+(defun rsr/agent-tmux-sessions ()
+  "Names of the running tmux sessions."
+  (when-let ((out (rsr/agent-tmux--output "list-sessions" "-F" "#{session_name}")))
+    (split-string out "\n" t)))
+
+(defvar rsr/agent-tmux--target nil
+  "When non-nil, a (SESSION . DIRECTORY) that `rsr/agent-tmux-target' returns.
+Bound by commands that already resolved the target, so it is asked for once.")
+
+(defun rsr/agent-tmux-target (&optional dir)
+  "Return (SESSION . DIRECTORY) for DIR (default `default-directory').
+Inside a git repository: the repository's name and root.  Elsewhere: a session
+name read from the user, and DIR."
+  (let ((dir (expand-file-name (or dir default-directory))))
+    (or rsr/agent-tmux--target
+        (if-let ((repo (locate-dominating-file dir ".git")))
+            (cons (rsr/agent-tmux-session-name
+                   (file-name-nondirectory (directory-file-name repo)))
+                  (expand-file-name repo))
+          (let ((name (string-trim (completing-read "tmux session: "
+                                                    (rsr/agent-tmux-sessions)))))
+            (when (string-empty-p name) (user-error "No session name given"))
+            (cons (rsr/agent-tmux-session-name name) dir))))))
+
+(defun rsr/agent-tmux-ensure-session (session dir)
+  "Create detached SESSION in DIR unless it already exists."
+  (or (rsr/agent-tmux--ok "has-session" "-t" (concat "=" session))
+      (rsr/agent-tmux--ok "new-session" "-d" "-s" session "-c" dir)))
+
+(defun rsr/agent-tmux-session-buffer (session)
+  "The ghostel buffer attached to SESSION, or nil."
+  (get-buffer (format "*tmux: %s*" session)))
+
+(declare-function ghostel-exec "ghostel")
+(defvar ghostel--process)
+
+(defun rsr/agent-tmux-show (session dir &optional display)
+  "Show SESSION in its ghostel buffer, attaching to it as needed.
+A session that doesn't exist yet is created in DIR.  With DISPLAY non-nil,
+display the buffer without selecting it.  Return the buffer."
+  (require 'ghostel)
+  (let ((buffer (get-buffer-create (format "*tmux: %s*" session))))
+    (if display
+        (display-buffer buffer '(nil (inhibit-same-window . t)))
+      (pop-to-buffer buffer))
+    (with-current-buffer buffer
+      (unless (process-live-p ghostel--process)
+        (setq default-directory (file-name-as-directory dir))
+        (ghostel-exec buffer (executable-find rsr/agent-tmux-program)
+                      (append (rsr/agent-tmux--socket-args)
+                              (list "new-session" "-A" "-s" session "-c" dir))))
+      (setq-local rsr/agent-tmux-session session))
+    buffer))
+
+(defun rsr/agent-tmux-active-window (session)
+  "The id of SESSION's current window, or nil."
+  (rsr/agent-tmux--output "display-message" "-p" "-t" (concat "=" session ":")
+                          "#{window_id}"))
+
+;;; Windows
+
+(defun rsr/agent-tmux-new-window (session dir env)
+  "Open a window in SESSION at DIR running the user's shell; return its id.
+ENV is a list of \"VAR=VALUE\" strings set in the window.  Variables in
+`rsr/agent-tmux-unset-environment' are removed first.
+
+ENV is applied by `env' in the window's command rather than with
+`new-window -e': tmux replaces PATH with the calling client's, so a PATH
+given with -e never reaches the shell."
+  (apply #'rsr/agent-tmux--output
+         `("new-window" "-P" "-F" "#{window_id}" "-t" ,(concat "=" session ":")
+           "-c" ,dir
+           "env" ,@(mapcan (lambda (var) (list "-u" var))
+                           rsr/agent-tmux-unset-environment)
+           ,@env
+           ,(or (getenv "SHELL") "/bin/sh") "-l")))
+
+(defun rsr/agent-tmux-select-window (window)
+  "Make WINDOW the current window of its session."
+  (rsr/agent-tmux--ok "select-window" "-t" window))
+
+(defun rsr/agent-tmux-kill-window (window)
+  "Close WINDOW."
+  (rsr/agent-tmux--ok "kill-window" "-t" window))
+
+(defun rsr/agent-tmux-send-text (window string)
+  "Type STRING into WINDOW literally."
+  (rsr/agent-tmux--ok "send-keys" "-t" window "-l" "--" string))
+
+(defun rsr/agent-tmux-send-enter (window)
+  "Press Enter in WINDOW."
+  (rsr/agent-tmux--ok "send-keys" "-t" window "Enter"))
+
+(defun rsr/agent-tmux-paste (window string)
+  "Paste STRING into WINDOW, bracketed when the program there asked for it."
+  (and (eq 0 (car (rsr/agent-tmux--call
+                   (list "load-buffer" "-b" "agent-sessions-paste" "-")
+                   string)))
+       (rsr/agent-tmux--ok "paste-buffer" "-p" "-d" "-b" "agent-sessions-paste"
+                           "-t" window)))
+
+(defun rsr/agent-tmux-capture (window)
+  "WINDOW's visible screen and recent history, with SGR codes, or nil."
+  (rsr/agent-tmux--output "capture-pane" "-p" "-e" "-J" "-S" "-40" "-t" window))
+
+;;; Pane state, read once and shared by a dashboard render
+
+(defvar rsr/agent-tmux--panes nil
+  "Cache: (TIME . HASH) mapping window id to (:pid PID :title TITLE).")
+
+(defconst rsr/agent-tmux--panes-ttl 1.0
+  "Seconds a pane snapshot is reused; one render issues at most one call.")
+
+(defun rsr/agent-tmux-panes ()
+  "Hash of window id → (:pid PID :title TITLE) for every window's first pane.
+Nil when tmux could not be asked, which callers must read as \"unknown\", not
+\"no windows\"."
+  (if (and rsr/agent-tmux--panes
+           (< (- (float-time) (car rsr/agent-tmux--panes)) rsr/agent-tmux--panes-ttl))
+      (cdr rsr/agent-tmux--panes)
+    (let* ((out (rsr/agent-tmux--output
+                 "list-panes" "-a" "-F" "#{window_id}\t#{pane_pid}\t#{pane_title}"))
+           (table (and out (make-hash-table :test 'equal))))
+      (when table
+        (dolist (line (split-string out "\n" t))
+          (pcase (split-string line "\t")
+            (`(,win ,pid . ,title)
+             (unless (gethash win table)
+               (puthash win (list :pid (string-to-number pid)
+                                  :title (string-join title "\t"))
+                        table))))))
+      (setq rsr/agent-tmux--panes (cons (float-time) table))
+      table)))
+
+(defun rsr/agent-tmux-forget-panes ()
+  "Drop the pane snapshot, so the next read asks tmux again."
+  (setq rsr/agent-tmux--panes nil))
+
+;;; Screen text
+
+(defun rsr/agent-tmux-faint-text (string)
+  "STRING with SGR escapes removed and faint (SGR 2) runs given a faint face.
+Faint ends at SGR 22 or a reset (0 or empty).  Other escape sequences are
+dropped.  Lets the composer check tell Claude's inline completion, which is
+drawn faint, from typed input."
+  (let ((pos 0) (faint nil) (parts nil))
+    (while (string-match "\e\\(?:\\[\\([0-?]*\\)[ -/]*\\([@-~]\\)\\|][^\a\e]*\\(?:\a\\|\e\\\\\\)\\|[@-Z\\\\-_]\\)"
+                         string pos)
+      (let ((text (substring string pos (match-beginning 0)))
+            (params (match-string 1 string))
+            (final (match-string 2 string)))
+        (push (if faint (propertize text 'face 'rsr/agent-tmux-faint) text) parts)
+        (when (equal final "m")
+          (dolist (p (if (string-empty-p params) '("0") (split-string params "[;:]")))
+            (pcase p
+              ("2" (setq faint t))
+              ((or "0" "" "22") (setq faint nil)))))
+        (setq pos (match-end 0))))
+    (let ((rest (substring string pos)))
+      (push (if faint (propertize rest 'face 'rsr/agent-tmux-faint) rest) parts))
+    (apply #'concat (nreverse parts))))
+
+;;; Proxy buffers
+
+(defvar-keymap rsr/agent-tmux-mode-map
+  :parent special-mode-map
+  "RET" #'rsr/agent-tmux-show-proxy)
+
+(define-derived-mode rsr/agent-tmux-mode special-mode "Agent-tmux"
+  "Stand-in buffer for an agent running in a tmux window.
+It carries the agent's dashboard state.  Its text is the window's last
+captured screen; \\[rsr/agent-tmux-show-proxy] shows the live window."
+  (setq-local revert-buffer-function
+              (lambda (&rest _) (rsr/agent-tmux-refresh-screen (current-buffer)))))
+
+(defun rsr/agent-tmux-make-proxy (name session window dir)
+  "Create a proxy buffer NAME for WINDOW of SESSION, working in DIR."
+  (with-current-buffer (generate-new-buffer name)
+    (rsr/agent-tmux-mode)
+    (setq default-directory (file-name-as-directory dir)
+          rsr/agent-tmux-session session
+          rsr/agent-tmux-window window)
+    (add-hook 'kill-buffer-query-functions #'rsr/agent-tmux--confirm-kill nil t)
+    (add-hook 'kill-buffer-hook #'rsr/agent-tmux--kill-window-on-kill nil t)
+    (current-buffer)))
+
+(defun rsr/agent-tmux-proxy-p (&optional buffer)
+  "Non-nil when BUFFER (default current) is a tmux proxy."
+  (eq (buffer-local-value 'major-mode (or buffer (current-buffer)))
+      'rsr/agent-tmux-mode))
+
+(defun rsr/agent-tmux-refresh-screen (buffer)
+  "Replace proxy BUFFER's text with its window's current screen.
+Return non-nil when the screen could be read."
+  (with-current-buffer buffer
+    (when-let ((screen (rsr/agent-tmux-capture rsr/agent-tmux-window)))
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert (rsr/agent-tmux-faint-text screen))
+        ;; tmux pads the capture to the pane's height; checks that look at
+        ;; "the last few lines" must see the content, not the padding.
+        (goto-char (point-max))
+        (skip-chars-backward " \t\n")
+        (delete-region (line-end-position) (point-max)))
+      t)))
+
+(defun rsr/agent-tmux-show-proxy (&optional buffer display)
+  "Show the tmux window behind proxy BUFFER (default current).
+With DISPLAY non-nil, display the session buffer without selecting it."
+  (interactive)
+  (with-current-buffer (or buffer (current-buffer))
+    (let ((session rsr/agent-tmux-session)
+          (dir default-directory))
+      (rsr/agent-tmux-select-window rsr/agent-tmux-window)
+      (rsr/agent-tmux-show session dir display))))
+
+(defun rsr/agent-tmux-window-of (buffer)
+  "For the ghostel buffer attached to a session, its active window's proxy.
+Return BUFFER unchanged for anything else.  Lets focus tracking treat looking
+at *tmux: S* as looking at the agent in S's current window."
+  (let ((session (buffer-local-value 'rsr/agent-tmux-session buffer)))
+    (if (or (null session) (rsr/agent-tmux-proxy-p buffer))
+        buffer
+      (let ((active (rsr/agent-tmux--cached-active-window session)))
+        (or (and active
+                 (seq-find (lambda (b)
+                             (and (rsr/agent-tmux-proxy-p b)
+                                  (equal (buffer-local-value 'rsr/agent-tmux-window b)
+                                         active)))
+                           (buffer-list)))
+            buffer)))))
+
+(defvar rsr/agent-tmux--active-cache nil
+  "(TIME SESSION . WINDOW): the last active-window answer, reused briefly.")
+
+(defun rsr/agent-tmux--cached-active-window (session)
+  "SESSION's active window, asking tmux at most once a second per session."
+  (pcase rsr/agent-tmux--active-cache
+    (`(,time ,s . ,win)
+     (if (and (equal s session) (< (- (float-time) time) 1.0))
+         win
+       (rsr/agent-tmux--fresh-active-window session)))
+    (_ (rsr/agent-tmux--fresh-active-window session))))
+
+(defun rsr/agent-tmux--fresh-active-window (session)
+  "Ask tmux for SESSION's active window and cache the answer."
+  (let ((win (rsr/agent-tmux-active-window session)))
+    (setq rsr/agent-tmux--active-cache (cons (float-time) (cons session win)))
+    win))
+
+(defun rsr/agent-tmux--confirm-kill ()
+  "Ask before killing a proxy whose window is still open."
+  (or rsr/agent-tmux--window-gone
+      (null (gethash rsr/agent-tmux-window (or (rsr/agent-tmux-panes)
+                                               (make-hash-table))))
+      (yes-or-no-p (format "Close tmux window %s in session %s? "
+                           rsr/agent-tmux-window rsr/agent-tmux-session))))
+
+(defun rsr/agent-tmux--kill-window-on-kill ()
+  "Close the proxy's window when the proxy is killed, unless it already closed."
+  (unless rsr/agent-tmux--window-gone
+    (rsr/agent-tmux-kill-window rsr/agent-tmux-window)
+    (rsr/agent-tmux-forget-panes)))
+
+(defun rsr/agent-tmux-proxies ()
+  "All live proxy buffers."
+  (seq-filter #'rsr/agent-tmux-proxy-p (buffer-list)))
+
+(defun rsr/agent-tmux-dead-proxies (&optional proxies)
+  "Those of PROXIES (default all) whose windows have closed.
+Empty when there are none or tmux is unreachable; asks tmux only when there
+is something to check."
+  (let ((proxies (or proxies (rsr/agent-tmux-proxies))))
+    (when-let ((panes (and proxies (rsr/agent-tmux-panes))))
+      (seq-remove (lambda (b)
+                    (gethash (buffer-local-value 'rsr/agent-tmux-window b) panes))
+                  proxies))))
+
+(defun rsr/agent-tmux-reap (buffers)
+  "Kill proxy BUFFERS whose windows have closed."
+  (dolist (b buffers)
+    (when (buffer-live-p b)
+      (with-current-buffer b (setq rsr/agent-tmux--window-gone t))
+      (let ((kill-buffer-query-functions nil))
+        (kill-buffer b)))))
+
+(defun rsr/agent-tmux-pane-title (buffer)
+  "The title the program in proxy BUFFER's window set, or nil.
+tmux reports the host name when no title was set; that is not a title."
+  (when-let* ((panes (rsr/agent-tmux-panes))
+              (pane (gethash (buffer-local-value 'rsr/agent-tmux-window buffer) panes))
+              (title (plist-get pane :title)))
+    (unless (or (string-empty-p title)
+                (string-prefix-p (car (split-string (system-name) "\\.")) title))
+      title)))
+
+(defun rsr/agent-tmux-pane-pid (buffer)
+  "The pid of the shell in proxy BUFFER's window, or nil."
+  (when-let* ((panes (rsr/agent-tmux-panes))
+              (pane (gethash (buffer-local-value 'rsr/agent-tmux-window buffer) panes)))
+    (plist-get pane :pid)))
+
+;;; Commands
+
+(declare-function ghostel "ghostel")
+(declare-function rsr/agent-sessions--create-terminal "agent-sessions")
+(declare-function rsr/agent-sessions--terminal-send "agent-sessions")
+(defvar rsr/agent-sessions-terminal)
+
+;;;###autoload
+(defun rsr/agent-tmux-terminal (&optional plain)
+  "Attach to this repository's tmux session in a ghostel buffer.
+The session is named after the git repository and created on first use;
+outside a repository you are asked for its name.  With prefix argument
+PLAIN, open a plain ghostel shell instead."
+  (interactive "P")
+  (if plain
+      (ghostel)
+    (pcase-let ((`(,session . ,dir) (rsr/agent-tmux-target)))
+      (rsr/agent-tmux-show session dir))))
+
+(defun rsr/agent-tmux-agent (program)
+  "Open a tracked agent-sessions terminal in a new tmux window and run PROGRAM."
+  (require 'agent-sessions)
+  (let* ((rsr/agent-tmux--target (rsr/agent-tmux-target))
+         (rsr/agent-sessions-terminal 'tmux)
+         (buf (rsr/agent-sessions--create-terminal (cdr rsr/agent-tmux--target))))
+    (rsr/agent-sessions--terminal-send buf program)
+    buf))
+
+;;;###autoload
+(defun rsr/agent-tmux-claude ()
+  "Open Claude Code in a new window of this repository's tmux session."
+  (interactive)
+  (rsr/agent-tmux-agent "claude"))
+
+;;;###autoload
+(defun rsr/agent-tmux-pi ()
+  "Open pi in a new window of this repository's tmux session."
+  (interactive)
+  (rsr/agent-tmux-agent "pi"))
+
+(provide 'agent-sessions-tmux)
+;;; agent-sessions-tmux.el ends here

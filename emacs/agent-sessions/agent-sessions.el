@@ -23,6 +23,7 @@
 ;; `rsr/agent-orchestration-launch-commands', and a spawn is the first thing
 ;; that would notice it missing — long after this file loaded cleanly.
 (require 'format-spec)
+(require 'agent-sessions-tmux)
 
 (defconst rsr/agent-sessions--dir
   (file-name-directory (or load-file-name buffer-file-name
@@ -134,11 +135,14 @@ message addressed through an older terminal can find this live replacement.")
 
 (defcustom rsr/agent-sessions-terminal 'vterm
   "Terminal emulator backend used for agent sessions.
-One of `vterm', `eat' or `ghostel'.  Only the selected package needs to be
-installed; it is loaded lazily the first time a session terminal is created."
+One of `vterm', `eat', `ghostel' or `tmux'.  Only the selected package needs to
+be installed; it is loaded lazily the first time a session terminal is created.
+`tmux' opens each terminal as a window in the repository's tmux session (see
+agent-sessions-tmux.el), shown in Emacs through ghostel."
   :type '(choice (const :tag "vterm" vterm)
                  (const :tag "eat" eat)
-                 (const :tag "ghostel" ghostel)))
+                 (const :tag "ghostel" ghostel)
+                 (const :tag "tmux" tmux)))
 
 (defcustom rsr/agent-sessions-show-all-worktrees nil
   "Legacy option retained for compatibility.
@@ -382,9 +386,17 @@ it is thinking/outputting).
 Deliberately does not rely on `current-buffer' here: vterm's process filter
 briefly makes its buffer current while inserting output even when it isn't
 the buffer the user is actually looking at, which would clear the flag
-spuriously."
-  (let* ((buf (window-buffer (selected-window)))
-         (id (and (buffer-live-p buf) (buffer-local-value 'rsr/agent-session-id buf)))
+spuriously.
+
+Looking at a tmux session's buffer counts as looking at the agent in that
+session's current window (`rsr/agent-tmux-window-of')."
+  (rsr/agent-session--clear-attention
+   (rsr/agent-tmux-window-of (window-buffer (selected-window)))))
+
+(defun rsr/agent-session--clear-attention (buf)
+  "Record that the user is looking at BUF, clearing what that settles.
+See `rsr/agent-session--clear-attention-on-focus'."
+  (let* ((id (and (buffer-live-p buf) (buffer-local-value 'rsr/agent-session-id buf)))
          (changed nil))
     (unless (eq buf rsr/agent-sessions--last-focused-buffer)
       (setq rsr/agent-sessions--last-focused-buffer buf)
@@ -651,20 +663,24 @@ recompute when the buffer's `default-directory' changes (e.g. after a `cd').")
     ('vterm-mode 'vterm)
     ('eat-mode 'eat)
     ('ghostel-mode 'ghostel)
+    ('rsr/agent-tmux-mode 'tmux)
     (_ 'term)))
 
 (defun rsr/agent-sessions--foreground-groups (buf)
   "Return (TPGID . PGRP) for BUF's terminal, or nil when the platform can't say.
 TPGID is the pty's foreground process group, PGRP the shell's own.  ghostel
 owns its pty natively, so `get-buffer-process' is only an event pipe there and
-the pair comes from ghostel's own probe instead."
+the pair comes from ghostel's own probe instead.  A tmux proxy has no process
+at all; its window's shell pid, from tmux, takes the process's place."
   (with-current-buffer buf
     (if (derived-mode-p 'ghostel-mode)
         (let ((fg (ignore-errors (ghostel-foreground-pid))))
           (and (integerp fg) (cons fg (ghostel--shell-pgid fg))))
-      (let* ((proc (get-buffer-process buf))
-             (attrs (and proc (process-live-p proc)
-                         (ignore-errors (process-attributes (process-id proc))))))
+      (let* ((pid (if (derived-mode-p 'rsr/agent-tmux-mode)
+                      (rsr/agent-tmux-pane-pid buf)
+                    (let ((proc (get-buffer-process buf)))
+                      (and proc (process-live-p proc) (process-id proc)))))
+             (attrs (and pid (ignore-errors (process-attributes pid)))))
         (and (assq 'tpgid attrs)
              (cons (cdr (assq 'tpgid attrs)) (cdr (assq 'pgrp attrs))))))))
 
@@ -928,27 +944,35 @@ Includes both real agent sessions (those a hook event has fired for) and
 plain vterm/eat buffers with no agent session yet, so idle terminals still
 show up in the dashboard.  Opportunistically drops registry entries whose
 buffer has been killed, since `kill-buffer-hook' cleanup can be missed (e.g.
-buffer killed without running local hooks)."
-  (let (entries)
+buffer killed without running local hooks).  A tmux proxy whose window has
+closed counts as dead (`rsr/agent-sessions--sync-tmux')."
+  (let ((dead (rsr/agent-sessions--sync-tmux))
+        entries)
     ;; Real agent sessions: a hook event has fired for these.
     (maphash
      (lambda (id session)
        (let ((buf (plist-get session :buffer)))
-         (if (buffer-live-p buf)
-             (push (list :id id
-                         :session (rsr/agent-sessions--unread-status
-                                   (rsr/agent-sessions--reconcile-status session buf)
-                                   buf)
-                         :title (or (buffer-local-value 'rsr/agent-session-title-override buf)
-                                    (buffer-local-value 'rsr/agent-session-title buf)))
-                   entries)
+         (cond
+          ;; Left for its scheduled kill, whose cleanup logs the close and
+          ;; needs the registry entry to do it.
+          ((memq buf dead))
+          ((buffer-live-p buf)
+           (push (list :id id
+                       :session (rsr/agent-sessions--unread-status
+                                 (rsr/agent-sessions--reconcile-status session buf)
+                                 buf)
+                       :title (or (buffer-local-value 'rsr/agent-session-title-override buf)
+                                  (buffer-local-value 'rsr/agent-session-title buf)))
+                 entries))
+          (t
            (remhash id rsr/agent-sessions)
-           (remhash id rsr/agent-session-id->buffer))))
+           (remhash id rsr/agent-session-id->buffer)))))
      rsr/agent-sessions)
     ;; Plain terminal buffers with no agent session yet.
     (maphash
      (lambda (id buf)
-       (cond ((not (buffer-live-p buf))
+       (cond ((memq buf dead))
+             ((not (buffer-live-p buf))
               (remhash id rsr/agent-session-id->buffer))
              ((not (gethash id rsr/agent-sessions))
               (push (list :id id
@@ -959,6 +983,23 @@ buffer killed without running local hooks)."
                     entries))))
      rsr/agent-session-id->buffer)
     (nreverse entries)))
+
+(defun rsr/agent-sessions--sync-tmux ()
+  "Bring tmux proxies up to date; return those whose windows have closed.
+Titles follow the window's title, as OSC titles do for the other backends.
+Closed windows' proxies are killed just after the current render (killing
+one refreshes the dashboard, which must not happen inside a render); their
+cleanup logs the close.  Asks tmux nothing when there are no proxies."
+  (when-let ((proxies (rsr/agent-tmux-proxies)))
+    (let ((dead (rsr/agent-tmux-dead-proxies proxies)))
+      (dolist (buf proxies)
+        (unless (memq buf dead)
+          (when-let ((title (rsr/agent-tmux-pane-title buf)))
+            (with-current-buffer buf
+              (setq-local rsr/agent-session-title title)))))
+      (when dead
+        (run-at-time 0 nil #'rsr/agent-tmux-reap dead))
+      dead)))
 
 (defface rsr/agent-session-needs-attention
   '((t :inherit warning :weight bold :extend t
@@ -3647,7 +3688,7 @@ dispatch menu in that directory (see `rsr/agent-sessions--switch-project')."
          (let* ((session (rsr/agent-sessions--session-for-id (oref section value)))
                 (buf (and session (plist-get session :buffer))))
            (if (buffer-live-p buf)
-               (pop-to-buffer buf)
+               (rsr/agent-sessions--show-terminal buf)
              (message "No session at point."))))
         ((or 'rsr/agent-session-worktree 'rsr/agent-session-repo)
          (let* ((value (oref section value))
@@ -3672,8 +3713,20 @@ Files and sessions use another window; external links open in the browser."
     (let* ((session (rsr/agent-sessions--session-at-point))
            (buf (and session (plist-get session :buffer))))
       (if (buffer-live-p buf)
-          (display-buffer buf '(nil (inhibit-same-window . t)))
+          (rsr/agent-sessions--show-terminal buf t)
         (message "No session at point."))))))
+
+(defun rsr/agent-sessions--show-terminal (buf &optional display)
+  "Select session terminal BUF, or with DISPLAY only show it in another window.
+A tmux proxy has no screen of its own: show its session's buffer with its
+window selected, and count that as looking at the session."
+  (if (rsr/agent-tmux-proxy-p buf)
+      (progn
+        (rsr/agent-tmux-show-proxy buf display)
+        (rsr/agent-session--clear-attention buf))
+    (if display
+        (display-buffer buf '(nil (inhibit-same-window . t)))
+      (pop-to-buffer buf))))
 
 (defun rsr/agent-sessions-display-or-browse ()
   "Display the thing at point, browsing links and shared HTML files.
@@ -4129,13 +4182,41 @@ BUFNAME is the desired buffer name.  Loads the backend package lazily."
               (eat-other-window nil t)))
       ('ghostel (require 'ghostel)
                 (ghostel-create bufname '(nil (inhibit-same-window . t))))
+      ('tmux (rsr/agent-sessions--tmux-open default-directory bufname))
       (_ (error "Unknown `rsr/agent-sessions-terminal': %S"
                 rsr/agent-sessions-terminal)))))
+
+(defun rsr/agent-sessions--tmux-open (dir bufname)
+  "Open a window in DIR's tmux session and register a proxy buffer BUFNAME.
+The window gets the same environment the other backends inject, so hooks and
+`emacs-share' find this session; the proxy carries its dashboard state."
+  (pcase-let* ((`(,session . ,_root) (rsr/agent-tmux-target dir))
+               (id (format "%d-%d" (emacs-pid) (cl-incf rsr/agent-session-counter)))
+               (window (and (rsr/agent-tmux-ensure-session session dir)
+                            (rsr/agent-tmux-new-window
+                             session dir (rsr/agent-sessions--terminal-environment id)))))
+    (unless window
+      (error "Could not open a tmux window in session %s" session))
+    (rsr/agent-tmux-forget-panes)
+    (let ((buf (rsr/agent-tmux-make-proxy bufname session window dir)))
+      (puthash id buf rsr/agent-session-id->buffer)
+      (with-current-buffer buf
+        (setq-local rsr/agent-session-id id)
+        (setq-local rsr/agent-session--created-at (current-time))
+        (add-hook 'kill-buffer-hook #'rsr/agent-session--cleanup nil t))
+      (rsr/agent-sessions--log-open buf)
+      ;; Like the other backends, select the new terminal: show the session,
+      ;; whose current window `new-window' has just made this one.
+      (rsr/agent-tmux-show session dir)
+      (rsr/agent-sessions--refresh-if-visible)
+      buf)))
 
 (defun rsr/agent-sessions--terminal-send (buf string)
   "Send STRING followed by Enter to the terminal in BUF."
   (with-current-buffer buf
-    (pcase rsr/agent-sessions-terminal
+    (pcase (if (derived-mode-p 'rsr/agent-tmux-mode) 'tmux rsr/agent-sessions-terminal)
+      ('tmux (rsr/agent-tmux-send-text rsr/agent-tmux-window string)
+             (rsr/agent-tmux-send-enter rsr/agent-tmux-window))
       ('vterm (vterm-send-string string) (vterm-send-return))
       ('eat (eat-term-send-string eat-terminal string)
             (eat-term-send-string eat-terminal "\r"))
@@ -4150,7 +4231,9 @@ BUFNAME is the desired buffer name.  Loads the backend package lazily."
      ((derived-mode-p 'eat-mode)
       (eat-term-send-string-as-yank eat-terminal string))
      ((derived-mode-p 'ghostel-mode) (ghostel-paste-string string))
-     (t (user-error "Current buffer is not an Eat, vterm or ghostel terminal")))))
+     ((derived-mode-p 'rsr/agent-tmux-mode)
+      (rsr/agent-tmux-paste rsr/agent-tmux-window string))
+     (t (user-error "Current buffer is not an Eat, vterm, ghostel or tmux terminal")))))
 
 (defun rsr/agent-session-insert-org-link ()
   "Prompt for an Org link and paste it into the current terminal input."
@@ -4262,7 +4345,7 @@ creating one."
                        (mapcar #'car cands) nil nil)))
          (buf (and choice (cdr (assoc choice cands)))))
     (if (buffer-live-p buf)
-        (pop-to-buffer buf)
+        (rsr/agent-sessions--show-terminal buf)
       (rsr/agent-sessions--create-terminal
        root (plist-get (rsr/agent-session--repo-info root) :worktree)))))
 
@@ -4632,7 +4715,7 @@ resume it via `rsr/agent-session-start'.  This is the target of the
 `agent-session' `elisp:' links produced by `org-store-link'."
   (let ((buf (rsr/agent-sessions--buffer-for-agent-session session-id)))
     (if (buffer-live-p buf)
-        (pop-to-buffer buf)
+        (rsr/agent-sessions--show-terminal buf)
       (rsr/agent-session-start worktree-path agent-type session-id))))
 
 ;;; Restoring sessions from the log -----------------------------------------
@@ -4702,7 +4785,7 @@ override preserves that label when the resumed agent emits fresh OSC titles."
     (cond
      (live
       (rsr/agent-sessions--restore-title live row)
-      (pop-to-buffer live)
+      (rsr/agent-sessions--show-terminal live)
       (message "That session is already open."))
      ((not (file-directory-p wt))
       (message "Worktree is gone: %s" wt))
@@ -5195,6 +5278,7 @@ scrollback must not make a running conversation look receptive, and a nonempty
 human draft deliberately does not match."
   (let ((buf (plist-get session :buffer)))
     (and (buffer-live-p buf)
+         (rsr/agent-sessions--sync-screen buf)
          (with-current-buffer buf
            (save-restriction
              (widen)
@@ -5231,7 +5315,9 @@ typed prefix is not faint, so a partially accepted or edited completion remains
 a real draft rather than becoming eligible for mail delivery.
 ghostel draws faint text as a blended `:foreground' with no face to inherit,
 so there a pending completion reads as a draft and mail waits for the next
-`UserPromptSubmit' — the safe direction to be wrong in."
+`UserPromptSubmit' — the safe direction to be wrong in.  A tmux proxy's
+screen marks faint runs with `rsr/agent-tmux-faint' (see
+`rsr/agent-tmux-faint-text'), so tmux keeps the distinction."
   (let ((pos 0)
         (end (length text))
         saw-text
@@ -5241,14 +5327,24 @@ so there a pending completion reads as a draft and mail waits for the next
              (chunk (substring-no-properties text pos next)))
         (unless (string-match-p "\\`[[:space:]\u00a0]*\\'" chunk)
           (setq saw-text t)
-          (unless (or (rsr/agent-orchestration--face-inherits-p
-                       (get-text-property pos 'face text) 'eat-term-faint)
-                      (rsr/agent-orchestration--face-inherits-p
-                       (get-text-property pos 'font-lock-face text)
-                       'eat-term-faint))
+          (unless (seq-some
+                   (lambda (faint)
+                     (or (rsr/agent-orchestration--face-inherits-p
+                          (get-text-property pos 'face text) faint)
+                         (rsr/agent-orchestration--face-inherits-p
+                          (get-text-property pos 'font-lock-face text) faint)))
+                   '(eat-term-faint rsr/agent-tmux-faint))
             (setq all-faint nil)))
         (setq pos next)))
     (and saw-text all-faint)))
+
+(defun rsr/agent-sessions--sync-screen (buf)
+  "Make BUF's text the terminal's current screen; return non-nil if usable.
+Terminal buffers are their screen already.  A tmux proxy reads its window's;
+when that fails it returns nil, so callers treat the screen as unknown."
+  (if (rsr/agent-tmux-proxy-p buf)
+      (rsr/agent-tmux-refresh-screen buf)
+    t))
 
 (defun rsr/agent-orchestration--claude-composer-text (session)
   "Return SESSION's visibly rendered Claude composer text, or nil if unknown.
@@ -5257,6 +5353,7 @@ and a horizontal separator.  Inspect only the most recent prompt near the end
 of the terminal buffer."
   (let ((buf (plist-get session :buffer)))
     (and (buffer-live-p buf)
+         (rsr/agent-sessions--sync-screen buf)
          (with-current-buffer buf
            (save-restriction
              (widen)
@@ -5299,7 +5396,9 @@ live human draft and left untouched."
      ((derived-mode-p 'vterm-mode) (vterm-send-string string))
      ((derived-mode-p 'eat-mode) (eat-term-send-string eat-terminal string))
      ((derived-mode-p 'ghostel-mode) (ghostel-send-string string))
-     (t (user-error "Current buffer is not an Eat, vterm or ghostel terminal")))))
+     ((derived-mode-p 'rsr/agent-tmux-mode)
+      (rsr/agent-tmux-send-text rsr/agent-tmux-window string))
+     (t (user-error "Current buffer is not an Eat, vterm, ghostel or tmux terminal")))))
 
 (defun rsr/agent-orchestration--call-with-timeout (program args timeout)
   "Run PROGRAM with ARGS, returning its exit status within TIMEOUT seconds.
@@ -5401,10 +5500,11 @@ feed it the rest as separate prompts."
    (lambda (target)
      (when (buffer-live-p target)
        (with-current-buffer target
-         (pcase rsr/agent-sessions-terminal
+         (pcase (if (derived-mode-p 'rsr/agent-tmux-mode) 'tmux rsr/agent-sessions-terminal)
            ('vterm (vterm-send-return))
            ('eat (eat-term-send-string eat-terminal "\r"))
-           ('ghostel (ghostel-send-string "\r"))))))
+           ('ghostel (ghostel-send-string "\r"))
+           ('tmux (rsr/agent-tmux-send-enter rsr/agent-tmux-window))))))
    buf))
 
 ;;; Sending selected text to an agent

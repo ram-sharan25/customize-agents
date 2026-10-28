@@ -39,6 +39,21 @@ eat/vterm is tracked automatically. The cost is that we advise the terminal
 packages' internals — accepted deliberately in exchange for never having to
 think about launching sessions specially.
 
+**A tmux agent is represented by a proxy buffer.** With the `tmux` backend an
+agent runs in a window of its repository's tmux session, so it can be watched
+from Emacs, Ghostty or nowhere; it has no Emacs terminal buffer of its own. It
+gets a stand-in buffer (`rsr/agent-tmux-mode`, agent-sessions-tmux.el) instead,
+because everything here keys on a buffer: identity, buffer-local state, hook
+routing, rows, cleanup, the log. Re-keying all of that on a "terminal handle"
+would touch most of the file; a proxy confines tmux to the terminal layer
+(open, I/O, running command, screen, jump, liveness). Consequences worth
+knowing: the injected environment goes through `env` in the window's command,
+because tmux replaces a `new-window -e PATH=` with the client's PATH; liveness
+is read once per render (`list-panes`) and dead proxies are killed just after
+it, never inside it; and the composer checks read the window with
+`capture-pane -e`, turning faint runs into a face so inline completions still
+read as not-a-draft.
+
 **The per-buffer id is the identity, not the agent's own session id.** Sessions
 sharing a worktree must still resolve to the right buffer, and the agent's own
 UUID isn't known until a hook fires (and isn't in every payload). So the stable
