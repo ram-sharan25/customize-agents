@@ -52,10 +52,6 @@
              (expand-file-name "../agent-sessions" user-emacs-directory))
 (require 'agent-sessions)
 
-;; ~/.pi/agent/extensions is a broken symlink; Pi actually loads ~/.config/pi/extensions.
-(setq rsr/agent-sessions-pi-extension-file
-      (expand-file-name "~/.config/pi/extensions/agent-sessions-pi-hook.ts"))
-
 (setq rsr/agent-sessions-db-file (expand-file-name "agent-sessions.db" user-emacs-directory)
       rsr/agent-sessions-terminal 'ghostel
       rsr/agent-sessions-show-all-worktrees t)
