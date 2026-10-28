@@ -1,0 +1,24 @@
+#+title: customize-agents
+
+Everything that customizes my coding agents (Claude Code, Pi, Codex), in one place, shared by all of them.  Planning documents live elsewhere, in =~/Stillness/Agent_Stuffs/Plans=.
+
+* Layout
+
+| Path                    | What                                                              |
+|-------------------------+-------------------------------------------------------------------|
+| =skills/=               | Agent skills; =install.sh= links each one into every harness.    |
+| =emacs/agent-sessions/= | Emacs dashboard for agent sessions, its hook scripts and =bin/= commands. |
+| =emacs/test-bed/=       | Isolated Emacs for trying agent-sessions (=--init-directory=).   |
+| =extensions/pi/=        | Pi extensions.                                                     |
+| =hooks/=                | Harness hook scripts.                                              |
+| =instructions/=         | Shared agent instructions.                                         |
+
+* Install
+
+#+begin_src sh
+./install.sh
+#+end_src
+
+Links every =skills/<name>= into =~/.claude/skills=, =~/.agents/skills=, =~/.pi/agent/skills= and =~/.config/pi/skills=.  It never overwrites a real directory; those are reported instead.
+
+The Emacs config loads =emacs/agent-sessions= from this path (=load-path=); see =emacs/test-bed/for-emacs-d.el=.

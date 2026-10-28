@@ -1,0 +1,52 @@
+#+title: agent-sessions test bed
+
+Isolated Emacs instance for trying bpanthi977's =agent-sessions= dashboard before moving it into =~/.emacs.d=.
+
+* Launch
+
+#+begin_src sh
+open -na Emacs --args --init-directory ~/Stillness/Development/customize-agents/emacs/test-bed
+#+end_src
+
+- Server name is =agent-test=; the main Emacs (=server=) is untouched.
+- Packages come from =~/.emacs.d/elpa= read-only. Nothing is fetched.
+- SQLite db: =agent-sessions.db= in this directory.
+- Module source: =../agent-sessions= (this repo).
+
+* Keys (test instance)
+
+| Key       | Command                            |
+|-----------+------------------------------------|
+| =C-c a a= | =rsr/agent-sessions-list= dashboard |
+| =C-c a s= | =rsr/agent-sessions-send-region=    |
+| =C-x p a= | =rsr/agent-session-switch-or-new=   |
+| =C-c C-l= | insert org link (in ghostel)       |
+
+Dashboard keys: =t= cycle state, =e= note, =RET= open, =k= detach attachment, =u= toggle unread, =R= resume, =N=/=P= next/prev needing attention.
+
+* Linear
+
+=linear-emacs= is cloned at =~/Stillness/Development/cloned-projects/linear-emacs= (not on MELPA). The API key is =my/linear-key= from =~/.emacs.d/secrets.el.gpg=, decrypted on the first Linear request. Issues sync to =linear.org= in this directory.
+
+- =M-x linear-emacs-test-connection= — check the key works
+- =M-x linear-emacs-list-issues= — pull issues into =linear.org=
+- =M-x linear-emacs-new-issue= — create an issue
+- =M-x linear-emacs-enable-org-sync= (in =linear.org=) — push TODO state changes back to Linear
+
+* One-time hook wiring (not done yet)
+
+Run inside the test Emacs:
+
+: M-x rsr/agent-sessions-install
+
+It adds hook groups to =~/.claude/settings.json= and =~/.codex/hooks.json= (a =.bak= is written first, other hooks are untouched) and copies =agent-sessions-pi-hook.ts= into =~/.pi/agent/extensions/=. =M-x rsr/agent-sessions-uninstall= reverses it. Until this runs, =claude=/=codex=/=pi= sessions will not report status; =emacs-share= already works.
+
+* Verified on 2026-10-27
+
+- 52/52 ERT tests pass in batch with Emacs 29.4 and the installed magit/eat.
+- Eat shell carries =EMACS_AGENT_SESSION_ID=, =EMACS_SOCKET_NAME=agent-test=, and =emacs-share= on PATH.
+- =emacs-share link linear|pr=, =emacs-share state=, =emacs-share file= and the Claude forwarder script all reach the test instance and render on the dashboard.
+
+* Moving to ~/.emacs.d
+
+=for-emacs-d.el= in this directory is the module to copy to =~/.emacs.d/modules/personal/agent-sessions-config.el=. Differences from this test init: no =server-name= override, no =EMACS_SOCKET_NAME= advice, db in =user-emacs-directory=, and the =C-c a= prefix can be changed. The package stays in this repo; =for-emacs-d.el= loads it from here and binds =C-c i d= / =C-c i r=.

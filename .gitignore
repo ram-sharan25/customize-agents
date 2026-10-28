@@ -1,0 +1,16 @@
+.DS_Store
+*~
+\#*\#
+.#*
+*.elc
+
+# test-bed runtime state (Emacs --init-directory)
+emacs/test-bed/.cache/
+emacs/test-bed/agent-sessions.db*
+emacs/test-bed/auto-save-list/
+emacs/test-bed/request/
+emacs/test-bed/launch.log
+emacs/test-bed/linear.org
+emacs/test-bed/site-lisp/
+emacs/test-bed/eln-cache/
+emacs/test-bed/transient/
