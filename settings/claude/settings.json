@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/rrimal/Stillness/Development/cloned-projects/bpanthi977-emacs.d/modules/agent-sessions/agent-sessions-claude-hook.sh",
+            "command": "/Users/rrimal/Stillness/Development/customize-agents/emacs/agent-sessions/agent-sessions-claude-hook.sh",
             "timeout": 10
           }
         ]
@@ -35,7 +35,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/rrimal/Stillness/Development/cloned-projects/bpanthi977-emacs.d/modules/agent-sessions/agent-sessions-claude-hook.sh",
+            "command": "/Users/rrimal/Stillness/Development/customize-agents/emacs/agent-sessions/agent-sessions-claude-hook.sh",
             "timeout": 10
           }
         ]
@@ -55,7 +55,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/rrimal/Stillness/Development/cloned-projects/bpanthi977-emacs.d/modules/agent-sessions/agent-sessions-claude-hook.sh",
+            "command": "/Users/rrimal/Stillness/Development/customize-agents/emacs/agent-sessions/agent-sessions-claude-hook.sh",
             "timeout": 10
           }
         ]
@@ -86,7 +86,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/rrimal/Stillness/Development/cloned-projects/bpanthi977-emacs.d/modules/agent-sessions/agent-sessions-claude-hook.sh",
+            "command": "/Users/rrimal/Stillness/Development/customize-agents/emacs/agent-sessions/agent-sessions-claude-hook.sh",
             "timeout": 10
           }
         ]
@@ -106,7 +106,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/rrimal/Stillness/Development/cloned-projects/bpanthi977-emacs.d/modules/agent-sessions/agent-sessions-claude-hook.sh",
+            "command": "/Users/rrimal/Stillness/Development/customize-agents/emacs/agent-sessions/agent-sessions-claude-hook.sh",
             "timeout": 10
           }
         ]
@@ -128,7 +128,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/rrimal/Stillness/Development/cloned-projects/bpanthi977-emacs.d/modules/agent-sessions/agent-sessions-claude-hook.sh",
+            "command": "/Users/rrimal/Stillness/Development/customize-agents/emacs/agent-sessions/agent-sessions-claude-hook.sh",
             "timeout": 10
           }
         ]
@@ -150,7 +150,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/rrimal/Stillness/Development/cloned-projects/bpanthi977-emacs.d/modules/agent-sessions/agent-sessions-claude-hook.sh",
+            "command": "/Users/rrimal/Stillness/Development/customize-agents/emacs/agent-sessions/agent-sessions-claude-hook.sh",
             "timeout": 10
           }
         ]
@@ -184,7 +184,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/rrimal/Stillness/Development/cloned-projects/bpanthi977-emacs.d/modules/agent-sessions/agent-sessions-claude-hook.sh",
+            "command": "/Users/rrimal/Stillness/Development/customize-agents/emacs/agent-sessions/agent-sessions-claude-hook.sh",
             "timeout": 10
           }
         ]
@@ -204,7 +204,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/rrimal/Stillness/Development/cloned-projects/bpanthi977-emacs.d/modules/agent-sessions/agent-sessions-claude-hook.sh",
+            "command": "/Users/rrimal/Stillness/Development/customize-agents/emacs/agent-sessions/agent-sessions-claude-hook.sh",
             "timeout": 10
           }
         ]
@@ -235,7 +235,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/rrimal/Stillness/Development/cloned-projects/bpanthi977-emacs.d/modules/agent-sessions/agent-sessions-claude-hook.sh",
+            "command": "/Users/rrimal/Stillness/Development/customize-agents/emacs/agent-sessions/agent-sessions-claude-hook.sh",
             "timeout": 10
           }
         ]

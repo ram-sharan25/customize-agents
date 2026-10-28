@@ -8,10 +8,6 @@
 (add-to-list 'load-path (expand-file-name "~/Stillness/Development/customize-agents/emacs/agent-sessions"))
 (require 'agent-sessions)
 
-;; ~/.pi/agent/extensions is a broken symlink; Pi actually loads ~/.config/pi/extensions.
-(setq rsr/agent-sessions-pi-extension-file
-      (expand-file-name "~/.config/pi/extensions/agent-sessions-pi-hook.ts"))
-
 (setq rsr/agent-sessions-terminal 'ghostel
       rsr/agent-sessions-show-all-worktrees t)
 ;; db defaults to ~/.emacs.d/agent-sessions.db
