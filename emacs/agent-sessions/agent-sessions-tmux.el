@@ -278,6 +278,74 @@ Nil when tmux could not be asked, which callers must read as \"unknown\", not
   "Drop the pane snapshot, so the next read asks tmux again."
   (setq rsr/agent-tmux--panes nil))
 
+;;; Reattaching after Emacs restarts
+;;
+;; Emacs runs `kill-emacs-hook' but not `kill-buffer-hook' when it exits, so
+;; a proxy never closes its window then: the agent keeps running in tmux.  To
+;; find it again, each window agent-sessions opens is tagged with the terminal
+;; id its shell was given (`@agent-session-id', never changed afterwards: the
+;; agent's environment keeps it) and the id of the Emacs terminal currently
+;; logging it (`@agent-session-log-id', moved on at each reattach).
+
+(defconst rsr/agent-tmux--id-option "@agent-session-id"
+  "Window option holding the terminal id a window was opened with.")
+
+(defconst rsr/agent-tmux--log-id-option "@agent-session-log-id"
+  "Window option holding the terminal id whose log rows describe the window.")
+
+(defun rsr/agent-tmux-tag-window (window id &optional log-id)
+  "Record terminal ID, and LOG-ID (default ID), on WINDOW for a later Emacs.
+With LOG-ID, ID is left as it is and only the log id moves."
+  (and (or log-id
+           (rsr/agent-tmux--ok "set-option" "-w" "-t" window
+                               rsr/agent-tmux--id-option id))
+       (rsr/agent-tmux--ok "set-option" "-w" "-t" window
+                           rsr/agent-tmux--log-id-option (or log-id id))))
+
+(defun rsr/agent-tmux--pane-env-id (pid)
+  "EMACS_AGENT_SESSION_ID in the environment of process PID, or nil.
+The fallback for windows opened before tagging existed.  Best effort: Linux
+exposes /proc; macOS needs `ps eww', which may be refused."
+  (let ((environ (format "/proc/%d/environ" pid)))
+    (if (file-readable-p environ)
+        (with-temp-buffer
+          (insert-file-contents-literally environ)
+          (and (re-search-forward "EMACS_AGENT_SESSION_ID=\\([^\0]+\\)" nil t)
+               (match-string 1)))
+      (with-temp-buffer
+        (and (eq 0 (ignore-errors
+                     (call-process "ps" nil t nil "eww" "-o" "command="
+                                   "-p" (number-to-string pid))))
+             (progn (goto-char (point-min))
+                    (re-search-forward
+                     "\\(?:^\\| \\)EMACS_AGENT_SESSION_ID=\\([^ \n]+\\)" nil t))
+             (match-string 1))))))
+
+(defun rsr/agent-tmux-agent-windows ()
+  "Windows on the server that agent-sessions opened, as plists.
+Each is (:window W :session S :dir DIR :id ID :log-id LOG-ID): ID the
+terminal id the window's shell was given, LOG-ID the one its latest log rows
+are under.  Untagged windows are recognised from their shell's environment
+when that can be read; any other window is left out."
+  (when-let ((out (rsr/agent-tmux--output
+                   "list-panes" "-a" "-F"
+                   (concat "#{window_id}\t#{session_name}\t#{pane_pid}\t"
+                           "#{pane_current_path}\t#{" rsr/agent-tmux--id-option "}\t"
+                           "#{" rsr/agent-tmux--log-id-option "}"))))
+    (let (seen windows)
+      (dolist (line (split-string out "\n" t))
+        (pcase (split-string line "\t")
+          (`(,win ,session ,pid ,dir ,tag ,log-tag)
+           (unless (member win seen)
+             (push win seen)
+             (when-let ((id (if (string-empty-p tag)
+                                (rsr/agent-tmux--pane-env-id (string-to-number pid))
+                              tag)))
+               (push (list :window win :session session :dir dir :id id
+                           :log-id (if (string-empty-p log-tag) id log-tag))
+                     windows))))))
+      (nreverse windows))))
+
 ;;; Screen text
 
 (defun rsr/agent-tmux--sgr-faint (params set)

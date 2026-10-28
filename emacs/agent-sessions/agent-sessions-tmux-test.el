@@ -351,4 +351,105 @@ Runs on its own server (empty config, private socket) and kills it after."
         (dolist (f (list db-file (concat db-file "-wal") (concat db-file "-shm")))
           (when (file-exists-p f) (delete-file f)))))))
 
+;;; Reattaching after Emacs restarts
+
+(defun rsr/agent-tmux-test--reattach-responder (panes)
+  "A responder whose agent-window listing is PANES; other calls succeed."
+  (lambda (args)
+    (pcase (car args)
+      ("list-panes" (if (string-match-p "agent-session-id" (car (last args)))
+                        panes
+                      "@9\t4242\tClaude Code\n"))
+      (_ ""))))
+
+(defun rsr/agent-tmux-test--log-row (emacs-sid worktree &optional agent-sid)
+  "Insert a closed session-log row for EMACS-SID, as a quit Emacs leaves it."
+  (sqlite-execute (rsr/agent-sessions--db)
+                  "INSERT INTO sessions (emacs_sid, agent_type, agent_sid, worktree,
+                                         title, opened_at, closed_at, close_reason)
+                   VALUES (?, ?, ?, ?, 'Old title', 1, 2, 'emacs-exit')"
+                  (list emacs-sid (and agent-sid "claude") agent-sid worktree)))
+
+(ert-deftest rsr/agent-tmux-opened-window-is-tagged-with-its-id ()
+  (rsr/agent-tmux-test--with-fake #'rsr/agent-tmux-test--standard
+    (let* ((proxy (rsr/agent-tmux-test--open-proxy))
+           (id (buffer-local-value 'rsr/agent-session-id proxy)))
+      (should (seq-find (lambda (c) (equal (car c) (list "set-option" "-w" "-t" "@7"
+                                                         "@agent-session-id" id)))
+                        rsr/agent-tmux-test--calls))
+      (should (seq-find (lambda (c) (equal (car c) (list "set-option" "-w" "-t" "@7"
+                                                         "@agent-session-log-id" id)))
+                        rsr/agent-tmux-test--calls)))))
+
+(ert-deftest rsr/agent-tmux-reattach-adopts-a-dead-emacs-window ()
+  (let ((dir (file-name-as-directory (make-temp-file "tmux-reattach-" t))))
+    (rsr/agent-tmux-test--with-fake
+        (rsr/agent-tmux-test--reattach-responder
+         (format "@9\trepo\t4242\t%s\t1-5\t\n" dir))
+      (cl-letf (((symbol-function 'rsr/agent-sessions--emacs-alive-p) #'ignore))
+        (rsr/agent-tmux-test--log-row "1-5" dir "sid-abc")
+        (let* ((adopted (rsr/agent-sessions-tmux-reattach))
+               (proxy (car adopted))
+               (id (buffer-local-value 'rsr/agent-session-id proxy)))
+          (should (= 1 (length adopted)))
+          (should (equal "@9" (buffer-local-value 'rsr/agent-tmux-window proxy)))
+          ;; The agent's own id still reaches the proxy.
+          (should (eq proxy (gethash "1-5" rsr/agent-session-id->buffer)))
+          (should (eq proxy (gethash id rsr/agent-session-id->buffer)))
+          (should (equal "sid-abc"
+                         (plist-get (gethash id rsr/agent-sessions) :agent-session-id)))
+          (should (eq proxy (rsr/agent-sessions--buffer-for-agent-session "sid-abc")))
+          ;; The log id moves on; the original id stays.
+          (should (seq-find (lambda (c) (equal (car c)
+                                               (list "set-option" "-w" "-t" "@9"
+                                                     "@agent-session-log-id" id)))
+                            rsr/agent-tmux-test--calls))
+          (should-not (seq-find (lambda (c) (equal (seq-take (car c) 5)
+                                                   (list "set-option" "-w" "-t" "@9"
+                                                         "@agent-session-id")))
+                                rsr/agent-tmux-test--calls))
+          (should (equal '(("sid-abc" "claude"))
+                         (sqlite-select (rsr/agent-sessions--db)
+                                        "SELECT agent_sid, agent_type FROM sessions
+                                          WHERE emacs_sid = ? AND closed_at IS NULL"
+                                        (list id))))
+          ;; Running it again adopts nothing new.
+          (should-not (rsr/agent-sessions-tmux-reattach)))))))
+
+(ert-deftest rsr/agent-tmux-reattach-follows-the-log-id ()
+  (let ((dir (file-name-as-directory (make-temp-file "tmux-reattach-" t))))
+    (rsr/agent-tmux-test--with-fake
+        (rsr/agent-tmux-test--reattach-responder
+         (format "@9\trepo\t4242\t%s\t1-5\t2-3\n" dir))
+      (cl-letf (((symbol-function 'rsr/agent-sessions--emacs-alive-p) #'ignore))
+        (rsr/agent-tmux-test--log-row "1-5" dir "sid-old")
+        (rsr/agent-tmux-test--log-row "2-3" dir "sid-new")
+        (let ((proxy (car (rsr/agent-sessions-tmux-reattach))))
+          (should (eq proxy (gethash "1-5" rsr/agent-session-id->buffer)))
+          (should (eq proxy (rsr/agent-sessions--buffer-for-agent-session "sid-new"))))))))
+
+(ert-deftest rsr/agent-tmux-reattach-skips-live-emacs-and-unknown-windows ()
+  (let ((dir (file-name-as-directory (make-temp-file "tmux-reattach-" t))))
+    (rsr/agent-tmux-test--with-fake
+        (rsr/agent-tmux-test--reattach-responder
+         (format "@9\trepo\t4242\t%s\t1-5\t\n@10\trepo\t4343\t%s\t1-6\t\n" dir dir))
+      ;; 1-5 belongs to an Emacs still running; 1-6 was never logged here.
+      (cl-letf (((symbol-function 'rsr/agent-sessions--emacs-alive-p)
+                 (lambda (id) (equal id "1-5"))))
+        (rsr/agent-tmux-test--log-row "1-5" dir "sid-abc")
+        (should-not (rsr/agent-sessions-tmux-reattach))
+        (should-not (rsr/agent-tmux-proxies))))))
+
+(ert-deftest rsr/agent-tmux-reattached-proxy-drops-its-alias-on-kill ()
+  (let ((dir (file-name-as-directory (make-temp-file "tmux-reattach-" t))))
+    (rsr/agent-tmux-test--with-fake
+        (rsr/agent-tmux-test--reattach-responder
+         (format "@9\trepo\t4242\t%s\t1-5\t\n" dir))
+      (cl-letf (((symbol-function 'rsr/agent-sessions--emacs-alive-p) #'ignore))
+        (rsr/agent-tmux-test--log-row "1-5" dir)
+        (let ((proxy (car (rsr/agent-sessions-tmux-reattach))))
+          (with-current-buffer proxy (setq rsr/agent-tmux--window-gone t))
+          (let ((kill-buffer-query-functions nil)) (kill-buffer proxy))
+          (should-not (gethash "1-5" rsr/agent-session-id->buffer)))))))
+
 ;;; agent-sessions-tmux-test.el ends here

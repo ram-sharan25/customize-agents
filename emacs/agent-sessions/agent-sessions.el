@@ -274,12 +274,20 @@ Populates the cache on first use; `rsr/agent-sessions-refresh' clears it."
                  rsr/agent-sessions--worktrees-cache)
       cached)))
 
+(defvar-local rsr/agent-session--previous-id nil
+  "The terminal id a previous Emacs gave this session, when it was reattached.
+Its agent still carries that id in `EMACS_AGENT_SESSION_ID', so hooks and
+`emacs-share' keep resolving through it.
+See `rsr/agent-sessions-tmux-reattach'.")
+
 (defun rsr/agent-session--cleanup ()
   (when rsr/agent-session-id
     (when (eq rsr/agent-sessions--last-focused-buffer (current-buffer))
       (setq rsr/agent-sessions--last-focused-buffer nil))
     (rsr/agent-sessions--log-close-buffer)
     (remhash rsr/agent-session-id rsr/agent-session-id->buffer)
+    (when rsr/agent-session--previous-id
+      (remhash rsr/agent-session--previous-id rsr/agent-session-id->buffer))
     (remhash rsr/agent-session-id rsr/agent-sessions)
     (remhash rsr/agent-session-id rsr/agent-orchestration--mail)
     (rsr/agent-sessions--refresh-if-visible)))
@@ -4211,6 +4219,7 @@ The window gets the same environment the other backends inject, so hooks and
                              session dir (rsr/agent-sessions--terminal-environment id)))))
     (unless window
       (error "Could not open a tmux window in session %s" session))
+    (rsr/agent-tmux-tag-window window id)
     (rsr/agent-tmux-forget-panes)
     (let ((buf (rsr/agent-tmux-make-proxy bufname session window dir)))
       (puthash id buf rsr/agent-session-id->buffer)
@@ -4224,6 +4233,83 @@ The window gets the same environment the other backends inject, so hooks and
       (rsr/agent-tmux-show session dir)
       (rsr/agent-sessions--refresh-if-visible)
       buf)))
+
+;;;###autoload
+(defun rsr/agent-sessions-tmux-reattach ()
+  "Give a proxy back to each tmux agent a previous Emacs left running.
+Quitting Emacs leaves tmux windows open (no `kill-buffer-hook' runs), and the
+log has closed their sessions as `emacs-exit'.  For every window tagged with a
+terminal id that this database logged, and whose Emacs is gone, make a proxy
+under a fresh id, keep the old id as an alias so the agent's hooks and
+`emacs-share' still reach it, and open a new log row carrying the last known
+agent identity.  That identity also makes `rsr/agent-sessions-restore-previous'
+see the session as live, so it is not started a second time.  Windows of a
+still-running Emacs, such as a test bed on the same server, are left alone.
+Returns the new proxies."
+  (interactive)
+  (let ((proxied (mapcar (lambda (b) (buffer-local-value 'rsr/agent-tmux-window b))
+                         (rsr/agent-tmux-proxies)))
+        adopted)
+    (dolist (w (rsr/agent-tmux-agent-windows))
+      (let* ((old-id (plist-get w :id))
+             (log-id (plist-get w :log-id))
+             (row (and (not (member (plist-get w :window) proxied))
+                       (not (gethash old-id rsr/agent-session-id->buffer))
+                       (not (rsr/agent-sessions--emacs-alive-p log-id))
+                       (car (sqlite-select
+                             (rsr/agent-sessions--db)
+                             "SELECT agent_sid, agent_type, worktree, title
+                                FROM sessions WHERE emacs_sid = ?
+                               ORDER BY id DESC LIMIT 1"
+                             (list log-id))))))
+        (when row
+          (pcase-let* ((`(,agent-sid ,agent-type ,worktree ,title) row)
+                       (dir (if (and worktree (file-directory-p worktree))
+                                worktree
+                              (plist-get w :dir)))
+                       (id (format "%d-%d" (emacs-pid)
+                                   (cl-incf rsr/agent-session-counter)))
+                       (buf (rsr/agent-tmux-make-proxy
+                             (format "%s-tmux" (file-name-nondirectory
+                                                (directory-file-name dir)))
+                             (plist-get w :session) (plist-get w :window) dir)))
+            (rsr/agent-tmux-tag-window (plist-get w :window) old-id id)
+            (puthash id buf rsr/agent-session-id->buffer)
+            (puthash old-id buf rsr/agent-session-id->buffer)
+            (with-current-buffer buf
+              (setq-local rsr/agent-session-id id)
+              (setq-local rsr/agent-session--previous-id old-id)
+              (setq-local rsr/agent-session--created-at (current-time))
+              (setq-local rsr/agent-session-title title)
+              (add-hook 'kill-buffer-hook #'rsr/agent-session--cleanup nil t))
+            (rsr/agent-sessions--log-open buf)
+            (when agent-sid
+              (let ((info (rsr/agent-sessions--buffer-repo-info buf)))
+                ;; What a hook event would have recorded.  The status is a
+                ;; guess until the agent's next event corrects it.
+                (puthash id (list :buffer buf
+                                  :agent-type agent-type
+                                  :agent-session-id agent-sid
+                                  :status 'stopped
+                                  :last-event "reattach"
+                                  :updated-at (current-time)
+                                  :repo (plist-get info :repo)
+                                  :repo-root (plist-get info :repo-root)
+                                  :worktree (plist-get info :worktree)
+                                  :worktree-name (plist-get info :worktree-name)
+                                  :branch (plist-get info :branch)
+                                  :worktree-path (plist-get info :worktree-path))
+                         rsr/agent-sessions))
+              (rsr/agent-sessions--log-update buf agent-type agent-sid)
+              (rsr/agent-sessions--folder-hydrate buf agent-sid)
+              (rsr/agent-orchestration--hydrate id))
+            (push buf adopted)))))
+    (rsr/agent-tmux-forget-panes)
+    (when adopted (rsr/agent-sessions--refresh-if-visible))
+    (when (called-interactively-p 'interactive)
+      (message "Reattached %d tmux session%s" (length adopted)
+               (if (= 1 (length adopted)) "" "s")))
+    (nreverse adopted)))
 
 (defun rsr/agent-sessions--terminal-send (buf string)
   "Send STRING followed by Enter to the terminal in BUF."
@@ -6596,9 +6682,10 @@ scripts on disk.  Safe to run whether or not `rsr/agent-sessions-install' ran."
 ;;;###autoload
 (defun rsr/agent-session-setup ()
   "Install all side effects this package makes on systems outside itself.
-Namely: the vterm/eat/ghostel advice (session-id injection + terminal-title capture),
-the focus hook that clears the needs-attention highlight, the `agent-session'
-Org link type, the `C-x p a' project binding, and starting the Emacs server
+Namely: the vterm/eat/ghostel advice (session-id injection
+and terminal-title capture), the focus hook that clears the needs-attention
+highlight, the `agent-session' Org link type, the `C-x p a' project binding,
+the tmux reattach at startup, and starting the Emacs server
 \(hook scripts reach us via emacsclient).  Idempotent; call from init/config."
   ;; vterm: inject EMACS_AGENT_SESSION_ID and capture the terminal title.
   (with-eval-after-load 'vterm
@@ -6626,6 +6713,12 @@ Org link type, the `C-x p a' project binding, and starting the Emacs server
   ;; away in an orderly fashion; `kill-buffer-hook' covers the other half, and
   ;; the fact that Emacs runs one but not the other is what distinguishes them.
   (add-hook 'kill-emacs-hook #'rsr/agent-sessions--log-close-all)
+  ;; The other side of that: tmux agents outlive Emacs, so pick them back up.
+  ;; Only for the tmux backend, so other setups never shell out to tmux.
+  (when (eq rsr/agent-sessions-terminal 'tmux)
+    (if after-init-time
+        (run-at-time 0 nil #'rsr/agent-sessions-tmux-reattach)
+      (add-hook 'emacs-startup-hook #'rsr/agent-sessions-tmux-reattach)))
   ;; A periodic heartbeat so a session lost to a *crash* can still be dated:
   ;; nothing runs at that point, so the last time we know Emacs was alive is
   ;; the best available answer.
