@@ -7,6 +7,7 @@ Everything that customizes my coding agents (Claude Code, Pi, Codex), in one pla
 | Path                    | What                                                              |
 |-------------------------+-------------------------------------------------------------------|
 | =skills/=               | Agent skills; =install.sh= links each one into every harness.    |
+| =skills/explore-session/= | Spin a tangent off into a child session in a new tmux window (brief by default, fork on request) and bring a short summary back; shared scripts, plus =extensions/pi/explore-session.ts= for Pi. |
 | =emacs/agent-sessions/= | Emacs dashboard for agent sessions, its hook scripts and =bin/= commands. |
 | =emacs/test-bed/=       | Isolated Emacs for trying agent-sessions (=--init-directory=).   |
 | =extensions/pi/=        | Pi extensions.                                                     |
