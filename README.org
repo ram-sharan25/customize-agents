@@ -26,4 +26,4 @@ Links every =skills/<name>= into =~/.claude/skills=, =~/.agents/skills= and =~/.
 
 Pi's home is =~/.pi/agent= (its own data: sessions, auth, trust, caches).  Its =AGENTS.md=, =settings.json=, =prompts= and =extensions= there are one-hop links into this repo.  Likewise Claude's home is =~/.claude=; its =CLAUDE.md=, =settings.json=, =statusline.sh= and =commands= are one-hop links here, and =settings.local.json= stays local.
 
-The Emacs config loads =emacs/agent-sessions= from this path (=load-path=); see =emacs/test-bed/for-emacs-d.el=.
+The Emacs config loads =emacs/agent-sessions= from this path (=load-path=); see =~/.emacs.d/modules/personal/ai-sessions-config.el=.  Agents run as tmux windows (=agent-sessions-tmux.el=).

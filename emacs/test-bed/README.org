@@ -47,6 +47,8 @@ It adds hook groups to =~/.claude/settings.json= and =~/.codex/hooks.json= (a =.
 - Eat shell carries =EMACS_AGENT_SESSION_ID=, =EMACS_SOCKET_NAME=agent-test=, and =emacs-share= on PATH.
 - =emacs-share link linear|pr=, =emacs-share state=, =emacs-share file= and the Claude forwarder script all reach the test instance and render on the dashboard.
 
-* Moving to ~/.emacs.d
+* In the main Emacs
 
-=for-emacs-d.el= in this directory is the module to copy to =~/.emacs.d/modules/personal/agent-sessions-config.el=. Differences from this test init: no =server-name= override, no =EMACS_SOCKET_NAME= advice, db in =user-emacs-directory=, and the =C-c a= prefix can be changed. The package stays in this repo; =for-emacs-d.el= loads it from here and binds =C-c i d= / =C-c i r=.
+agent-sessions is wired into =~/.emacs.d= by =modules/personal/ai-sessions-config.el=, which loads the package from this repo, uses the =tmux= backend and binds =C-c i d= (dashboard) and =C-c i r= (send region).  Differences from this test init: no =server-name= override, no =EMACS_SOCKET_NAME= advice, and the db in =user-emacs-directory=.
+
+Both use the =tmux= backend on the normal tmux server; each Emacs only manages the windows it created.

@@ -53,7 +53,7 @@
 (require 'agent-sessions)
 
 (setq rsr/agent-sessions-db-file (expand-file-name "agent-sessions.db" user-emacs-directory)
-      rsr/agent-sessions-terminal 'ghostel
+      rsr/agent-sessions-terminal 'tmux
       rsr/agent-sessions-show-all-worktrees t)
 
 ;; The hook scripts and emacs-share call plain `emacsclient -e`, which targets
