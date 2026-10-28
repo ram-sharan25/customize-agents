@@ -18,6 +18,7 @@ Create a git commit for the current changes using a concise Conventional Commits
 - Body is OPTIONAL. If needed, add a blank line after the subject and write short paragraphs.
 - Do NOT include breaking-change markers or footers.
 - Do NOT add sign-offs (no `Signed-off-by`).
+- Do NOT add agent information: no `Co-Authored-By` trailer, no "Generated with …" line, no agent or model name anywhere in the commit.
 - Only commit; do NOT push.
 - If it is unclear whether a file should be included, ask the user which files to commit.
 - Treat any caller-provided arguments as additional commit guidance. Common patterns:
