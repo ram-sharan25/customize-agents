@@ -19,6 +19,6 @@ Everything that customizes my coding agents (Claude Code, Pi, Codex), in one pla
 ./install.sh
 #+end_src
 
-Links every =skills/<name>= into =~/.claude/skills=, =~/.agents/skills=, =~/.pi/agent/skills= and =~/.config/pi/skills=.  It never overwrites a real directory; those are reported instead.
+Links every =skills/<name>= into =~/.claude/skills=, =~/.agents/skills= and =~/.config/pi/skills= (Pi's home, =PI_CODING_AGENT_DIR=).  It never overwrites a real directory; those are reported instead.
 
 The Emacs config loads =emacs/agent-sessions= from this path (=load-path=); see =emacs/test-bed/for-emacs-d.el=.

@@ -11,7 +11,6 @@ repo="$(cd "$(dirname "$0")" && pwd)"
 harness_dirs=(
   "$HOME/.claude/skills"
   "$HOME/.agents/skills"
-  "$HOME/.pi/agent/skills"
   "$HOME/.config/pi/skills"
 )
 
