@@ -14,3 +14,5 @@ emacs/test-bed/linear.org
 emacs/test-bed/site-lisp/
 emacs/test-bed/eln-cache/
 emacs/test-bed/transient/
+
+node_modules/

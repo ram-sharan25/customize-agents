@@ -1,0 +1,52 @@
+#+title: Requirements Plan Extension Contract
+#+status: FINAL
+#+startup: overview
+
+* Public interfaces
+
+=/requirements-plan= and =requirements_plan= are adapters over the same service. The six actions are =start=, =respond=, =status=, =complete=, =cancel=, and =release=. A model-callable =start= must be the sole call in its assistant message.
+
+* Normative result rules
+
+Every result contains =action=, =state=, and =session_id=. It includes =stage= when known, =task= after task resolution, and =artifacts= after artifact resolution. Inapplicable optional fields are omitted, never JSON =null=. Task and artifact shapes follow =contracts.ts=.
+
+Exactly one payload is present: =decision= for =pending_human_decision=, =error= for =error=, and =outcome= for =active=, =ok=, or =cancelled=. Legal states by action are:
+
+- start: active, pending_human_decision, error
+- respond: active, pending_human_decision, ok, cancelled, error
+- status: active, pending_human_decision, ok, error
+- complete: ok, pending_human_decision, error
+- cancel: cancelled, error
+- release: ok, error
+
+The normative outcome kinds are =stage_active=, =idle=, =decision_applied=, =stage_completed=, =stage_cancelled=, and =ownership_released=. Existing artifacts read by the suite carry a =sha256:= content hash.
+
+* Illustrative JSON (non-normative)
+
+#+begin_src json
+{"action":"start","state":"pending_human_decision","session_id":"session-123","stage":"review-requirements","task":{"id":"config/task","directory":"/Users/rrimal/Stillness/Agent_Stuffs/Plans/config/task"},"artifacts":[{"kind":"requirements","path":"/Users/rrimal/Stillness/Agent_Stuffs/Plans/config/task/requirements.org","content_hash":"sha256:..."}],"decision":{"id":"decision-789","kind":"review-mode","prompt":"Where should the review run?","choices":[{"id":"current","label":"Current conversation"},{"id":"isolated","label":"Isolated branch"}]}}
+#+end_src
+
+#+begin_src json
+{"action":"status","state":"ok","session_id":"session-123","outcome":{"kind":"idle"}}
+#+end_src
+
+* Operational state and recovery
+
+Cross-session metadata is stored with mode 0700/0600 under =/Users/rrimal/Stillness/Agent_Stuffs/Plans/.pi/workflow-state/=. Task records use a SHA-256 digest of the normalized absolute task directory and verify the stored task path. Replaceable JSON uses same-directory temporary-write/rename; ownership and decision-consumption use exclusive creation. Audit events are append-only. Authoritative document content remains only in =requirements.org= and =plan.org=.
+
+Writable ownership never expires. =complete= and =cancel= release it; =release= preserves resumable state and approved writes. Operation locks become stale after 30 minutes but may be stolen only after explicit approval. Cancellation does not roll back approved writes.
+
+* Capability and path boundary
+
+While active, each stage exposes only suite-controlled tools. Shell, generic read/write/edit, and unknown tools are denied; direct =!=/=!!= shell is blocked. Controlled review reads are restricted to confirmed artifacts, applicable =AGENTS.md= files, and existing literal file references.
+
+Version 1 uses Pi/current-working-directory path resolution and ordinary realpath-based mutation queue identity. It does not claim protection against every symlink redirection, ununified alias, or target changed between validation and access.
+
+* Stable error classes
+
+Common stable codes include =INVALID_INPUT=, =REFERENCE_REQUIRED=, =TASK_NOT_FOUND=, =ARTIFACT_MISSING=, =INVALID_ORG=, =INVALID_DECISION=, =DECISION_REUSED=, =DECISION_MISMATCH=, =STALE_DECISION=, =STALE_ARTIFACT=, =NOT_OWNER=, =LOCKED=, =STALE_LOCK=, =PATH_NOT_ALLOWED=, =CAPABILITY_BLOCKED=, =BRANCH_TRANSITION_FAILED=, and =transition_requires_exclusive_call=.
+
+* Isolated review exception
+
+A tool-started isolated review first persists active restrictions, then queues =/requirements-plan-transition= as the exclusive next action. Navigation failure clears active restrictions and is retained as =BRANCH_TRANSITION_FAILED= for status diagnostics.
