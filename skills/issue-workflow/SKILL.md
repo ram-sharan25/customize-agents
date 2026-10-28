@@ -1,6 +1,7 @@
 ---
 name: issue-workflow
 description: Investigate, plan, implement, and review a non-trivial engineering issue in the current repository through an Org plan package in the Plans workspace and an explicit implementation gate. The user does all commits, pushes, and PRs.
+disable-model-invocation: true
 ---
 
 # Issue Workflow

@@ -1,6 +1,7 @@
 ---
 name: clarify-requirements
 description: Guides user-owned requirements discovery, clarification, drafting, review handoffs, and explicit finalization in requirements.org. Use when discussing a vague task, creating or updating structured requirements, resolving review feedback, or finalizing requirements; do not use for an independent requirements review.
+disable-model-invocation: true
 ---
 
 # Clarify Requirements
@@ -35,7 +36,7 @@ For a new task:
 - Agree with the user on descriptive kebab-case project and task names.
 - Re-check applicable instructions at the chosen location.
 - Obtain explicit approval to initialize. Refuse to overwrite existing files silently.
-- Copy `/Users/rrimal/Stillness/Agent_Stuffs/Plans/templates/requirements.org` and `plan.org` into the directory, preserving their Org structure. Customize titles as appropriate, but keep `#+status: DRAFT` in `requirements.org`; do not develop the plan during this stage.
+- Copy `/Users/rrimal/Stillness/Agent_Stuffs/Plans/templates/requirements.org`, `decisions.org`, and `plan.org` into the directory, preserving their Org structure and header keywords as the workspace `AGENTS.md` describes. Customize titles as appropriate, but keep `#+status: DRAFT`; do not develop the plan during this stage.
 
 ## 2. Clarify one decision at a time
 
@@ -62,9 +63,9 @@ Readiness is not approval. Suggest consolidation when these are sufficiently cle
 - observable success or acceptance conditions; and
 - all remaining material assumptions and unresolved questions are visible.
 
-Show a concise proposed consolidation or change summary, then ask whether to update the initialized `requirements.org`. Write only after explicit approval. Keep that file authoritative, preserve confirmed decisions and rationale, and clearly separate facts, assumptions, and unresolved questions. Do not hide open items merely to make the draft appear complete. Keep status `DRAFT`.
+Show a concise proposed consolidation or change summary, then ask whether to update the initialized `requirements.org`. Write only after explicit approval. Keep that file authoritative for the problem and scope, and clearly separate facts, assumptions, and unresolved questions. Write confirmed decisions to `decisions.org` as short titled entries; the `* Decisions` section of `requirements.org` only points there. Do not hide open items merely to make the draft appear complete. Keep status `DRAFT` while clarifying; with the user's approval, set `READY-FOR-REVIEW` when handing the document to review.
 
-If resolving agent-review or Plannotator feedback, discuss each material point through the same loop and apply only user-approved changes. Do not duplicate either review mechanism inside this skill.
+If resolving agent-review or Plannotator feedback, discuss each material point through the same loop and apply only user-approved changes. Record changed or confirmed decisions in `decisions.org` and other review outcomes under its `* Review record`. A material change returns the document to `DRAFT`. Do not duplicate either review mechanism inside this skill.
 
 ## 4. Reviews and finalization
 
@@ -79,6 +80,6 @@ Track which reviews remain outstanding. At the current stage boundary, summarize
 
 Honor an explicit bypass of either named review or both. A general request to continue is not a review bypass. If the user requests finalization while reviews remain, identify them and require either completion or an explicit bypass.
 
-Change only the Org directive `#+status: DRAFT` to `#+status: FINAL` when the user unambiguously requests finalization and any outstanding reviews are completed or explicitly bypassed. Permission to plan or implement from a draft is a separate exception: record/report that authorization while retaining `DRAFT`.
+Change only the Org directive `#+status:` from `DRAFT` or `READY-FOR-REVIEW` to `FINAL` when the user unambiguously requests finalization and any outstanding reviews are completed or explicitly bypassed. Permission to plan or implement from a draft is a separate exception: record/report that authorization while retaining `DRAFT`.
 
 After finalization, report the path and stop. By default, suggest that the user manually begin a fresh planning session with `plan-implementation`. If the user explicitly requests direct implementation from the confirmed `requirements.org`, report that authorization and stop; a separately user-started implementation agent may use that requirements document alone without requiring a `plan.org`. Do not produce a plan, review a plan, implement, or claim later user testing within this skill. Implementation is allowed only in a separately user-started implementation stage with an explicit implementation request.

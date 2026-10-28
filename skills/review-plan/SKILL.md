@@ -1,6 +1,7 @@
 ---
 name: review-plan
 description: Performs a bounded, read-only review of one existing plan.org against its sibling requirements.org and reports material findings in chat. Use for independent plan review; do not use to clarify requirements, create or refine plans, finalize documents, or implement.
+disable-model-invocation: true
 ---
 
 # Review Plan
@@ -26,7 +27,7 @@ Discover and follow applicable `AGENTS.md` instructions while remaining read-onl
 
 1. If the user supplies an exact file or directory, resolve it to exactly one `plan.org` under `/Users/rrimal/Stillness/Agent_Stuffs/Plans/`.
 2. Otherwise ask for a task name or description, search candidate paths and Org titles, and inspect only enough metadata to identify plausible matches.
-3. Pair the selected plan only with `requirements.org` in the same planning directory. Never infer or substitute a requirements document elsewhere.
+3. Pair the selected plan only with `requirements.org` and, when present, `decisions.org` in the same planning directory. Never infer or substitute a requirements document elsewhere.
 4. Report the exact plan and requirements paths and their statuses, then require explicit user confirmation before substantive review.
 
 A path in the review request still requires concise confirmation. If selection is ambiguous, list candidates and stop for a choice. If either document is missing, report the missing pairing and stop; do not review another document or create anything.
@@ -36,7 +37,7 @@ A path in the review request still requires concise confirmation. If selection i
 Review evidence is limited to:
 
 - the confirmed `plan.org`;
-- its confirmed sibling `requirements.org`; and
+- its confirmed sibling `requirements.org` and `decisions.org`; and
 - literal sources explicitly referenced by either document, only when needed to assess a claim.
 
 Do not inspect neighboring files, repositories, documentation, prior chats, or convention merely because they seem relevant. State each explicit reference followed and why. If a reference is ambiguous, inaccessible, sensitive, or invites broad exploration, report the verification gap instead of expanding scope.
@@ -57,9 +58,9 @@ Assess in practical impact order:
 8. rollback or recovery; and
 9. whether tasks, decisions, states, and handoffs make the plan actionable by another agent.
 
-Check that verified facts cite evidence, assumptions remain labeled, and unresolved material decisions and blockers are visible. Verify stronger traceability when the plan says complexity requires it. Do not invent missing design choices or turn reviewer preferences into requirements.
+Check that verified facts cite evidence, assumptions remain labeled, and unresolved material decisions and blockers are visible. Verify stronger traceability when the plan says complexity requires it. Flag any plan content that contradicts, weakens, or works around an entry in `decisions.org`. Do not invent missing design choices or turn reviewer preferences into requirements.
 
-Also identify lifecycle-invalid states when material changes appear to retain `FINAL`, draft-planning authorization is incomplete, a plan appears to authorize implementation, or the selected plan is stale against materially changed requirements.
+Also identify lifecycle-invalid states when a status is not `DRAFT`, `READY-FOR-REVIEW`, `FINAL`, or `RECONCILED`, when material changes appear to retain `FINAL`, draft-planning authorization is incomplete, a plan appears to authorize implementation, or the selected plan is stale against materially changed requirements.
 
 ## 4. Report and stop
 

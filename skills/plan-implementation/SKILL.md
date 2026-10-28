@@ -1,6 +1,7 @@
 ---
 name: plan-implementation
 description: Collaboratively creates or refines one implementation plan.org from one confirmed requirements.org, governing planning decisions, synchronization, review handoff, and explicit finalization. Use for implementation planning; do not use to clarify requirements, independently review a plan, or implement it.
+disable-model-invocation: true
 ---
 
 # Plan Implementation
@@ -33,7 +34,7 @@ A path included in the planning request still requires concise confirmation. Res
 
 ## 2. Enforce requirements status
 
-Require `#+status: FINAL` by default. If requirements are `DRAFT`, stop unless the user explicitly authorizes planning from those draft requirements. That authorization is distinct from finalizing requirements, finalizing the plan, bypassing reviews, or authorizing implementation.
+Require `#+status: FINAL` by default. If requirements are `DRAFT` or `READY-FOR-REVIEW`, stop unless the user explicitly authorizes planning from those draft requirements. That authorization is distinct from finalizing requirements, finalizing the plan, bypassing reviews, or authorizing implementation.
 
 After explicit draft-planning authorization, initialize or update the sibling `plan.org` and durably record:
 
@@ -46,14 +47,15 @@ A chat-only record is insufficient. Keep the plan `DRAFT` while requirements are
 
 ## 3. Initialize or preserve the plan
 
-Use `/Users/rrimal/Stillness/Agent_Stuffs/Plans/templates/plan.org` and applicable workspace instructions for a new plan. Refuse silent overwrite. If `plan.org` exists, preserve useful content and propose material restructuring before applying it.
+Use `/Users/rrimal/Stillness/Agent_Stuffs/Plans/templates/plan.org` and applicable workspace instructions for a new plan. If the package has no `decisions.org`, create it from the template. Refuse silent overwrite. If `plan.org` exists, preserve useful content and propose material restructuring before applying it.
 
 The plan must retain valid Org structure and identify durably:
 
-- `#+status: DRAFT` or `#+status: FINAL`;
+- `#+status:` (`DRAFT`, `READY-FOR-REVIEW`, `FINAL`, or `RECONCILED`);
 - its absolute planning-task directory;
-- the exact sibling requirements path; and
-- the absolute implementation repository path when applicable, otherwise an explicit `N/A`.
+- the exact sibling requirements and decisions paths;
+- the absolute implementation repository path when applicable, otherwise an explicit `N/A`; and
+- the issue and baseline SHA when applicable.
 
 Do not infer a repository merely from nearby directories. Obtain confirmation for a material path choice.
 
@@ -66,7 +68,7 @@ For each highest-impact unresolved material implementation choice:
 1. Ask one concise, neutral, first-principles question.
 2. Let the user answer before presenting options.
 3. Give a small option set, trade-offs, or a recommendation only if requested; label uncertainty.
-4. Restate the proposed settled decision and obtain confirmation before recording it.
+4. Restate the proposed settled decision and obtain confirmation before recording it in `decisions.org`. The plan may link to that entry but must not become a second authority.
 
 Never silently choose scope, architecture, dependencies, or risk trade-offs during normal planning. Stop probing when an issue is non-material, reversible, speculative, or better deferred, but record any unresolved material choice and its blocking effect.
 
@@ -88,7 +90,8 @@ The plan must include:
 - risks and mitigations;
 - validation mapped to requirements and acceptance criteria;
 - rollback or recovery;
-- open decisions; and
+- open decisions;
+- implementation decisions (`None` until implementation); and
 - progress notes.
 
 Keep tasks specific enough for another agent to execute, with ordering and expected verification. Keep the plan synchronized rather than preserving stale conclusions.
@@ -110,6 +113,6 @@ The default plan sequence is:
 3. return in a fresh `plan-implementation` session to resolve feedback; and
 4. explicit user finalization.
 
-Track outstanding reviews. Honor an explicit bypass of either named review or both; a general instruction to continue is not a bypass. If finalization is requested with reviews outstanding, require their completion or explicit bypass. Only an unambiguous user finalization request may change `#+status: DRAFT` to `#+status: FINAL`. Plan finalization is not implementation authorization.
+Track outstanding reviews. Honor an explicit bypass of either named review or both; a general instruction to continue is not a bypass. If finalization is requested with reviews outstanding, require their completion or explicit bypass. With the user's approval, set `READY-FOR-REVIEW` when handing the plan to review. Only an unambiguous user finalization request may change `#+status:` from `DRAFT` or `READY-FOR-REVIEW` to `FINAL`. Plan finalization is not implementation authorization.
 
 End by reporting concisely the plan and requirements paths and statuses, repository path or `N/A`, unresolved items, and next suggested stage. Then stop. Never launch review, invoke annotation, implement, manage another stage, or imply that the current planning session can cross into implementation. Implementation requires a fresh user-started session, a separate explicit request, and artifact confirmation under global instructions.

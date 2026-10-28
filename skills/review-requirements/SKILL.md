@@ -1,6 +1,7 @@
 ---
 name: review-requirements
 description: Performs a bounded, read-only review of one existing requirements.org and reports material findings in chat. Use when asked to critique, audit, or agent-review requirements; do not use to clarify, edit, finalize, plan, or implement.
+disable-model-invocation: true
 ---
 
 # Review Requirements
@@ -29,7 +30,7 @@ A path supplied in the same message as an explicit request to review it still re
 
 ## 2. Bound the evidence
 
-The selected `requirements.org` is the default and authoritative review evidence. Do not inspect neighboring plans, repositories, documentation, prior conversation artifacts, or other files merely because they appear relevant.
+The selected `requirements.org` and its sibling `decisions.org`, when present, are the default and authoritative review evidence. Do not inspect neighboring plans, repositories, documentation, prior conversation artifacts, or other files merely because they appear relevant.
 
 Follow another source only when the selected document explicitly references it and the source is needed to evaluate a requirement. State which reference is being followed and why. If a reference is ambiguous, inaccessible, sensitive, or would cause broad exploration, report the resulting verification gap rather than expanding scope. An applicable instruction file may govern conduct but is not evidence for judging the requirements.
 
