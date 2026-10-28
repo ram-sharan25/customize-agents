@@ -51,6 +51,13 @@ turns off transcript saving in every Claude started in the window, and a stale
 `PI_CODING_AGENT_DIR' points pi at the wrong home."
   :type '(repeat string))
 
+(defcustom rsr/agent-tmux-hide-mode-line t
+  "Non-nil to hide the Emacs mode line in *tmux: S* buffers.
+tmux draws its own status line inside the buffer, so the mode line below it
+is a second one.  tmux's status is a session option, so it cannot be turned
+off for the Emacs client alone without also losing it in Ghostty."
+  :type 'boolean)
+
 (defface rsr/agent-tmux-faint '((t :inherit shadow))
   "Face for faint (SGR 2) text in a captured tmux screen.")
 
@@ -175,6 +182,7 @@ workspace.  Elsewhere: a session name read from the user, and DIR."
 
 (declare-function ghostel-exec "ghostel")
 (defvar ghostel--process)
+(defvar ghostel--pid)
 
 (defun rsr/agent-tmux-show (session dir &optional display)
   "Show SESSION in its ghostel buffer, attaching to it as needed.
@@ -191,6 +199,9 @@ display the buffer without selecting it.  Return the buffer."
         (ghostel-exec buffer (executable-find rsr/agent-tmux-program)
                       (append (rsr/agent-tmux--socket-args)
                               (list "new-session" "-A" "-s" session "-c" dir))))
+      ;; After `ghostel-exec', whose mode change resets buffer-local values.
+      (when rsr/agent-tmux-hide-mode-line
+        (setq-local mode-line-format nil))
       (setq-local rsr/agent-tmux-session session))
     buffer))
 
@@ -198,6 +209,30 @@ display the buffer without selecting it.  Return the buffer."
   "The id of SESSION's current window, or nil."
   (rsr/agent-tmux--output "display-message" "-p" "-t" (concat "=" session ":")
                           "#{window_id}"))
+
+(defun rsr/agent-tmux-client (buffer)
+  "The tty of the tmux client running in ghostel BUFFER, or nil.
+Matched by pid: ghostel runs the client directly, so its child is the client.
+A client can be moved to another session from inside it (prefix s, prefix
+\=(), after which *tmux: S* no longer shows S; showing a window there must
+therefore address the client, not the session."
+  (when-let* ((pid (and (buffer-live-p buffer)
+                        (with-current-buffer buffer
+                          (or (and (boundp 'ghostel--pid) ghostel--pid)
+                              (and (boundp 'ghostel--process)
+                                   (process-live-p ghostel--process)
+                                   (process-id ghostel--process))))))
+              (out (rsr/agent-tmux--output "list-clients" "-F"
+                                           "#{client_pid}\t#{client_tty}")))
+    (cl-loop for line in (split-string out "\n" t)
+             for (client-pid tty) = (split-string line "\t")
+             when (equal client-pid (number-to-string pid))
+             return tty)))
+
+(defun rsr/agent-tmux-client-window (buffer)
+  "The window the tmux client in ghostel BUFFER is showing, or nil."
+  (when-let ((tty (rsr/agent-tmux-client buffer)))
+    (rsr/agent-tmux--output "display-message" "-p" "-c" tty "#{window_id}")))
 
 ;;; Windows
 
@@ -435,10 +470,17 @@ Return non-nil when the screen could be read."
 With DISPLAY non-nil, display the session buffer without selecting it."
   (interactive)
   (with-current-buffer (or buffer (current-buffer))
-    (let ((session rsr/agent-tmux-session)
-          (dir default-directory))
-      (rsr/agent-tmux-select-window rsr/agent-tmux-window)
-      (rsr/agent-tmux-show session dir display))))
+    (let* ((session rsr/agent-tmux-session)
+           (window rsr/agent-tmux-window)
+           (dir default-directory)
+           ;; Selecting the window covers a client that is about to attach;
+           ;; one already attached may be on another session by now, so it
+           ;; is switched to the window as well.
+           (shown (progn (rsr/agent-tmux-select-window window)
+                         (rsr/agent-tmux-show session dir display))))
+      (when-let ((tty (rsr/agent-tmux-client shown)))
+        (rsr/agent-tmux--ok "switch-client" "-c" tty "-t" window))
+      shown)))
 
 (defun rsr/agent-tmux-window-of (buffer)
   "For the ghostel buffer attached to a session, its active window's proxy.
@@ -447,7 +489,7 @@ at *tmux: S* as looking at the agent in S's current window."
   (let ((session (buffer-local-value 'rsr/agent-tmux-session buffer)))
     (if (or (null session) (rsr/agent-tmux-proxy-p buffer))
         buffer
-      (let ((active (rsr/agent-tmux--cached-active-window session)))
+      (let ((active (rsr/agent-tmux--cached-active-window session buffer)))
         (or (and active
                  (seq-find (lambda (b)
                              (and (rsr/agent-tmux-proxy-p b)
@@ -457,21 +499,24 @@ at *tmux: S* as looking at the agent in S's current window."
             buffer)))))
 
 (defvar rsr/agent-tmux--active-cache nil
-  "(TIME SESSION . WINDOW): the last active-window answer, reused briefly.")
+  "(TIME BUFFER . WINDOW): the last active-window answer, reused briefly.")
 
-(defun rsr/agent-tmux--cached-active-window (session)
-  "SESSION's active window, asking tmux at most once a second per session."
+(defun rsr/agent-tmux--cached-active-window (session buffer)
+  "The window shown in ghostel BUFFER, attached to SESSION.
+Asks tmux at most once a second per buffer."
   (pcase rsr/agent-tmux--active-cache
-    (`(,time ,s . ,win)
-     (if (and (equal s session) (< (- (float-time) time) 1.0))
+    (`(,time ,b . ,win)
+     (if (and (eq b buffer) (< (- (float-time) time) 1.0))
          win
-       (rsr/agent-tmux--fresh-active-window session)))
-    (_ (rsr/agent-tmux--fresh-active-window session))))
+       (rsr/agent-tmux--fresh-active-window session buffer)))
+    (_ (rsr/agent-tmux--fresh-active-window session buffer))))
 
-(defun rsr/agent-tmux--fresh-active-window (session)
-  "Ask tmux for SESSION's active window and cache the answer."
-  (let ((win (rsr/agent-tmux-active-window session)))
-    (setq rsr/agent-tmux--active-cache (cons (float-time) (cons session win)))
+(defun rsr/agent-tmux--fresh-active-window (session buffer)
+  "Ask tmux for the window BUFFER's client shows and cache the answer.
+Falls back to SESSION's current window when the client can't be found."
+  (let ((win (or (rsr/agent-tmux-client-window buffer)
+                 (rsr/agent-tmux-active-window session))))
+    (setq rsr/agent-tmux--active-cache (cons (float-time) (cons buffer win)))
     win))
 
 (defun rsr/agent-tmux--confirm-kill ()

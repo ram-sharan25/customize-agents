@@ -4876,6 +4876,18 @@ override preserves that label when the resumed agent emits fresh OSC titles."
       (rsr/agent-sessions--refresh-if-visible)))
   buf)
 
+(defun rsr/agent-sessions--never-saved-p (row)
+  "Non-nil when ROW is a Claude session with no saved conversation.
+Claude reports a session id at `SessionStart' but writes the transcript only
+with the first prompt, so a session that was opened and never used is logged
+yet cannot be resumed: `claude --resume' just fails with \"No conversation
+found\"."
+  (and (equal (plist-get row :agent-type) "claude")
+       (null (file-expand-wildcards
+              (expand-file-name (format "projects/*/%s.jsonl"
+                                        (plist-get row :agent-sid))
+                                (or (getenv "CLAUDE_CONFIG_DIR") "~/.claude"))))))
+
 (defun rsr/agent-sessions--restore-row (row)
   "Resume the session described by ROW, or jump to it if it is already open."
   (let* ((wt (plist-get row :worktree))
@@ -4889,6 +4901,8 @@ override preserves that label when the resumed agent emits fresh OSC titles."
       (message "That session is already open."))
      ((not (file-directory-p wt))
       (message "Worktree is gone: %s" wt))
+     ((rsr/agent-sessions--never-saved-p row)
+      (message "Nothing to resume: that Claude session was never used."))
      (t
       ;; A tmux session outside git can't be derived from the folder; its
       ;; name is the row's label (see `rsr/agent-sessions--buffer-repo-info'),
@@ -4934,6 +4948,10 @@ never by accident.  Sessions already open are skipped, as are worktrees that
 no longer exist, and what is left is shown for confirmation before anything
 is spawned."
   (interactive)
+  ;; Agents still running in tmux would otherwise be offered for a second
+  ;; copy; reattaching first makes them count as open.
+  (when (eq rsr/agent-sessions-terminal 'tmux)
+    (rsr/agent-sessions-tmux-reattach))
   (let* ((rows (rsr/agent-sessions--log-rows
                 "close_reason IN ('crash', 'emacs-exit')
                  AND closed_at = (SELECT MAX(closed_at) FROM sessions
@@ -4945,12 +4963,14 @@ is spawned."
          (gone (seq-filter (lambda (r)
                              (not (file-directory-p (plist-get r :worktree))))
                            rows))
-         (todo (seq-difference rows (append live gone))))
+         (unused (seq-filter #'rsr/agent-sessions--never-saved-p
+                             (seq-difference rows (append live gone))))
+         (todo (seq-difference rows (append live gone unused))))
     (cond
      ((null rows) (message "No sessions were lost — nothing to restore."))
      ((null todo)
-      (message "Nothing to restore: %d already open, %d worktree(s) gone."
-               (length live) (length gone)))
+      (message "Nothing to restore: %d already open, %d worktree(s) gone, %d never used."
+               (length live) (length gone) (length unused)))
      (t
       (with-output-to-temp-buffer "*Agent Sessions Restore*"
         (princ (format "Sessions from the last Emacs (%s):\n\n"
@@ -4961,7 +4981,9 @@ is spawned."
           (princ (format "\nAlready open, will be skipped: %d\n" (length live))))
         (dolist (r gone)
           (princ (format "\nWorktree gone, cannot restore: %s\n"
-                         (plist-get r :worktree)))))
+                         (plist-get r :worktree))))
+        (when unused
+          (princ (format "\nNever used, nothing to resume: %d\n" (length unused)))))
       (when (yes-or-no-p (format "Restore %d session(s)? " (length todo)))
         ;; Staggered: each spawns a terminal and types into it, and firing them
         ;; all in one go leaves the shells racing their own startup.

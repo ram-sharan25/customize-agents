@@ -1084,5 +1084,23 @@
                                  :status))))
       (kill-buffer buffer))))
 
+(ert-deftest rsr/agent-sessions-never-saved-claude-session-is-detected ()
+  "A Claude session with no transcript cannot be resumed; one with one can."
+  (let* ((dir (make-temp-file "claude-config-" t))
+         (process-environment (cons (format "CLAUDE_CONFIG_DIR=%s" dir)
+                                    process-environment)))
+    (unwind-protect
+        (progn
+          (make-directory (expand-file-name "projects/-some-repo" dir) t)
+          (write-region "" nil (expand-file-name "projects/-some-repo/used.jsonl" dir))
+          (should (rsr/agent-sessions--never-saved-p
+                   '(:agent-type "claude" :agent-sid "unused")))
+          (should-not (rsr/agent-sessions--never-saved-p
+                       '(:agent-type "claude" :agent-sid "used")))
+          ;; Only Claude defers its transcript; other agents are left alone.
+          (should-not (rsr/agent-sessions--never-saved-p
+                       '(:agent-type "codex" :agent-sid "unused"))))
+      (delete-directory dir t))))
+
 (provide 'agent-sessions-test)
 ;;; agent-sessions-test.el ends here

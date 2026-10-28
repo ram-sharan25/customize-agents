@@ -6,6 +6,8 @@
 (require 'ert)
 (require 'agent-sessions)
 
+(defvar ghostel--pid)
+
 (defvar rsr/agent-tmux-test--calls nil
   "Recorded (ARGS . INPUT) pairs, oldest first.")
 
@@ -151,6 +153,7 @@ proxy BODY leaves behind."
         seen)
     (make-directory (expand-file-name ".git" repo))
     (cl-letf (((symbol-function 'rsr/agent-sessions--buffer-for-agent-session) #'ignore)
+              ((symbol-function 'rsr/agent-sessions--never-saved-p) #'ignore)
               ((symbol-function 'rsr/agent-sessions--restore-title) #'ignore)
               ((symbol-function 'rsr/agent-session-start)
                (lambda (&rest _) (push rsr/agent-tmux--target seen) nil)))
@@ -290,6 +293,28 @@ clobbered by `split-string'); the 2 of 38;2 must not read as faint."
       (should (equal (caar (rsr/agent-tmux-test--called "select-window"))
                      '("select-window" "-t" "@7")))
       (should (buffer-local-value 'rsr/agent-session--viewed-at proxy)))))
+
+(ert-deftest rsr/agent-tmux-jump-moves-a-client-that-left-the-session ()
+  "Showing a proxy also points the attached client at its window.
+The client in *tmux: S* may have been switched to another session from
+inside tmux; selecting the window in S alone would leave it there."
+  (rsr/agent-tmux-test--with-fake
+      (lambda (args)
+        (pcase (car args)
+          ("list-clients" "111\t/dev/ttys001\n4242\t/dev/ttys009\n")
+          (_ (rsr/agent-tmux-test--standard args))))
+    (let ((proxy (rsr/agent-tmux-test--open-proxy))
+          (shown (generate-new-buffer " *tmux: test*")))
+      (unwind-protect
+          (progn
+            (with-current-buffer shown (setq-local ghostel--pid 4242))
+            (setq rsr/agent-tmux-test--calls nil)
+            (cl-letf (((symbol-function 'rsr/agent-tmux-show)
+                       (lambda (&rest _) shown)))
+              (rsr/agent-sessions--show-terminal proxy))
+            (should (equal (caar (rsr/agent-tmux-test--called "switch-client"))
+                           '("switch-client" "-c" "/dev/ttys009" "-t" "@7"))))
+        (kill-buffer shown)))))
 
 (ert-deftest rsr/agent-tmux-killing-proxy-closes-its-window ()
   (rsr/agent-tmux-test--with-fake #'rsr/agent-tmux-test--standard
