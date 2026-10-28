@@ -103,20 +103,66 @@ Return (STATUS . OUTPUT); STATUS is -1 when tmux could not be run."
   "When non-nil, a (SESSION . DIRECTORY) that `rsr/agent-tmux-target' returns.
 Bound by commands that already resolved the target, so it is asked for once.")
 
+(defun rsr/agent-tmux-checkout (dir)
+  "For DIR inside a git checkout, return (REPO WORKTREE ROOT), else nil.
+REPO is the repository's name, WORKTREE nil for the main checkout and the
+linked worktree's name otherwise, ROOT the checkout's top directory.  Reads
+the `.git' file of a linked worktree (\"gitdir: <main>/.git/worktrees/X\")
+rather than running git.  A worktree folder named REPO-X is called X."
+  (when-let ((root (locate-dominating-file dir ".git")))
+    (let* ((root (file-name-as-directory (expand-file-name root)))
+           (dotgit (expand-file-name ".git" root))
+           (folder (file-name-nondirectory (directory-file-name root))))
+      (if (file-directory-p dotgit)
+          (list folder nil root)
+        (let* ((gitdir (with-temp-buffer
+                         (ignore-errors (insert-file-contents dotgit))
+                         (and (re-search-forward "^gitdir: *\\(.+\\)$" nil t)
+                              (expand-file-name (match-string 1) root))))
+               (main (and gitdir
+                          (string-match "\\`\\(.*\\)/\\.git/worktrees/[^/]+/?\\'" gitdir)
+                          (match-string 1 gitdir))))
+          (if (not main)
+              ;; A submodule or other `.git' file: a checkout of its own.
+              (list folder nil root)
+            (let ((repo (file-name-nondirectory (directory-file-name main))))
+              (list repo
+                    (if (and (string-prefix-p (concat repo "-") folder)
+                             (> (length folder) (1+ (length repo))))
+                        (substring folder (1+ (length repo)))
+                      folder)
+                    root))))))))
+
 (defun rsr/agent-tmux-target (&optional dir)
   "Return (SESSION . DIRECTORY) for DIR (default `default-directory').
-Inside a git repository: the repository's name and root.  Elsewhere: a session
-name read from the user, and DIR."
+In a repository's main checkout: the repository's name and root.  In a linked
+worktree: REPO/WORKTREE and the worktree's root, so each worktree is its own
+workspace.  Elsewhere: a session name read from the user, and DIR."
   (let ((dir (expand-file-name (or dir default-directory))))
     (or rsr/agent-tmux--target
-        (if-let ((repo (locate-dominating-file dir ".git")))
-            (cons (rsr/agent-tmux-session-name
-                   (file-name-nondirectory (directory-file-name repo)))
-                  (expand-file-name repo))
-          (let ((name (string-trim (completing-read "tmux session: "
-                                                    (rsr/agent-tmux-sessions)))))
-            (when (string-empty-p name) (user-error "No session name given"))
-            (cons (rsr/agent-tmux-session-name name) dir))))))
+        (pcase (rsr/agent-tmux-checkout dir)
+          (`(,repo ,worktree ,root)
+           (cons (rsr/agent-tmux-session-name
+                  (if worktree (concat repo "/" worktree) repo))
+                 root))
+          (_
+           (let ((name (string-trim (completing-read "tmux session: "
+                                                     (rsr/agent-tmux-sessions)))))
+             (when (string-empty-p name) (user-error "No session name given"))
+             (cons (rsr/agent-tmux-session-name name) dir)))))))
+
+(defvar rsr/agent-tmux--session-paths (make-hash-table :test 'equal)
+  "Session name → its start directory, once asked.")
+
+(defun rsr/agent-tmux-session-path (session)
+  "SESSION's start directory (tmux's session_path), or nil."
+  (or (gethash session rsr/agent-tmux--session-paths)
+      (when-let ((path (rsr/agent-tmux--output "display-message" "-p" "-t"
+                                               (concat "=" session ":")
+                                               "#{session_path}")))
+        (unless (string-empty-p path)
+          (puthash session (file-name-as-directory path)
+                   rsr/agent-tmux--session-paths)))))
 
 (defun rsr/agent-tmux-ensure-session (session dir)
   "Create detached SESSION in DIR unless it already exists."
@@ -234,6 +280,22 @@ Nil when tmux could not be asked, which callers must read as \"unknown\", not
 
 ;;; Screen text
 
+(defun rsr/agent-tmux--sgr-faint (params set)
+  "Walk SGR PARAMS (the text between ESC[ and m), calling SET on faint changes.
+SET gets t at 2 and nil at 22 or a reset (0, or no parameters).  The colour
+arguments of 38/48/58 are skipped, so the 2 in 38;2;R;G;B is not faint.
+Colon sub-parameters (38:2:R:G:B) stay one parameter and are ignored."
+  (let ((ps (if (string-empty-p params) '("0") (split-string params ";"))))
+    (while ps
+      (let ((p (pop ps)))
+        (pcase p
+          ("2" (funcall set t))
+          ((or "0" "" "22") (funcall set nil))
+          ((or "38" "48" "58")
+           (pcase (pop ps)
+             ("5" (pop ps))
+             ("2" (setq ps (nthcdr 3 ps))))))))))
+
 (defun rsr/agent-tmux-faint-text (string)
   "STRING with SGR escapes removed and faint (SGR 2) runs given a faint face.
 Faint ends at SGR 22 or a reset (0 or empty).  Other escape sequences are
@@ -242,16 +304,16 @@ drawn faint, from typed input."
   (let ((pos 0) (faint nil) (parts nil))
     (while (string-match "\e\\(?:\\[\\([0-?]*\\)[ -/]*\\([@-~]\\)\\|][^\a\e]*\\(?:\a\\|\e\\\\\\)\\|[@-Z\\\\-_]\\)"
                          string pos)
+      ;; Read everything from the match first: `split-string' below runs its
+      ;; own regex search and would overwrite the match data.
       (let ((text (substring string pos (match-beginning 0)))
             (params (match-string 1 string))
-            (final (match-string 2 string)))
+            (final (match-string 2 string))
+            (next (match-end 0)))
         (push (if faint (propertize text 'face 'rsr/agent-tmux-faint) text) parts)
         (when (equal final "m")
-          (dolist (p (if (string-empty-p params) '("0") (split-string params "[;:]")))
-            (pcase p
-              ("2" (setq faint t))
-              ((or "0" "" "22") (setq faint nil)))))
-        (setq pos (match-end 0))))
+          (rsr/agent-tmux--sgr-faint params (lambda (on) (setq faint on))))
+        (setq pos next)))
     (let ((rest (substring string pos)))
       (push (if faint (propertize rest 'face 'rsr/agent-tmux-faint) rest) parts))
     (apply #'concat (nreverse parts))))

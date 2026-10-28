@@ -576,7 +576,7 @@ to the terminal that actually owns the event."
                    (gethash "user_prompt" payload))
               (and existing (plist-get existing :submitted-prompt)))))
     (when (buffer-live-p buf)
-      (let* ((info (rsr/agent-session--repo-info (buffer-local-value 'default-directory buf)))
+      (let* ((info (rsr/agent-sessions--buffer-repo-info buf))
              ;; Parentage, in priority order: what a previous event already
              ;; recorded; the marker a fresh `b'-branch left on the buffer; or,
              ;; the first time we see this session, an auto-detected fork parent
@@ -648,14 +648,28 @@ Computing repo info shells out to git, so cache it per buffer and only
 recompute when the buffer's `default-directory' changes (e.g. after a `cd').")
 
 (defun rsr/agent-sessions--buffer-repo-info (buf)
-  "Return `rsr/agent-session--repo-info' for BUF, cached on its directory."
+  "Return `rsr/agent-session--repo-info' for BUF, cached on its directory.
+A tmux proxy outside any git repository is grouped by its tmux session
+instead: the session's name stands in for the repo name and for the worktree
+label (which the session log keeps, so a resume knows the session), and the
+session's start directory for the repo root."
   (with-current-buffer buf
-    (let ((dir default-directory))
-      (if (and rsr/agent-sessions--repo-info-cache
-               (equal (car rsr/agent-sessions--repo-info-cache) dir))
-          (cdr rsr/agent-sessions--repo-info-cache)
-        (cdr (setq rsr/agent-sessions--repo-info-cache
-                   (cons dir (rsr/agent-session--repo-info dir))))))))
+    (let* ((dir default-directory)
+           (info (if (and rsr/agent-sessions--repo-info-cache
+                          (equal (car rsr/agent-sessions--repo-info-cache) dir))
+                     (cdr rsr/agent-sessions--repo-info-cache)
+                   (cdr (setq rsr/agent-sessions--repo-info-cache
+                              (cons dir (rsr/agent-session--repo-info dir)))))))
+      (if (and (null (plist-get info :repo)) (rsr/agent-tmux-proxy-p buf))
+          (let ((session rsr/agent-tmux-session))
+            (list :repo session
+                  :repo-root (or (rsr/agent-tmux-session-path session)
+                                 (rsr/agent-sessions--canonical-path dir))
+                  :worktree session
+                  :worktree-name session
+                  :branch nil
+                  :worktree-path (rsr/agent-sessions--canonical-path dir)))
+        info))))
 
 (defun rsr/agent-sessions--buffer-terminal-type (buf)
   "Return a symbol naming BUF's terminal backend (`vterm', `eat', `ghostel', or `term')."
@@ -4790,8 +4804,15 @@ override preserves that label when the resumed agent emits fresh OSC titles."
      ((not (file-directory-p wt))
       (message "Worktree is gone: %s" wt))
      (t
-      (rsr/agent-sessions--restore-title
-       (rsr/agent-session-start wt type sid) row)))))
+      ;; A tmux session outside git can't be derived from the folder; its
+      ;; name is the row's label (see `rsr/agent-sessions--buffer-repo-info'),
+      ;; so resume into it rather than asking.
+      (let ((rsr/agent-tmux--target
+             (and (not (rsr/agent-tmux-checkout wt))
+                  (plist-get row :label)
+                  (cons (plist-get row :label) wt))))
+        (rsr/agent-sessions--restore-title
+         (rsr/agent-session-start wt type sid) row))))))
 
 ;;;###autoload
 (defun rsr/agent-sessions-restore ()

@@ -79,6 +79,87 @@ proxy BODY leaves behind."
       (should (equal (rsr/agent-tmux-target dir)
                      (cons "my-sess" (expand-file-name dir)))))))
 
+(defun rsr/agent-tmux-test--worktree (main folder &optional name)
+  "Make a fake linked worktree FOLDER of MAIN, registered as NAME."
+  (let ((wt (expand-file-name folder (file-name-directory (directory-file-name main)))))
+    (make-directory wt t)
+    (with-temp-file (expand-file-name ".git" wt)
+      (insert (format "gitdir: %s/.git/worktrees/%s\n"
+                      (directory-file-name main) (or name folder))))
+    wt))
+
+(ert-deftest rsr/agent-tmux-target-names-worktrees-repo-slash-worktree ()
+  (let* ((parent (make-temp-file "tmux-test-wt-" t))
+         (main (expand-file-name "proj" parent)))
+    (make-directory (expand-file-name ".git" main) t)
+    (let ((prefixed (rsr/agent-tmux-test--worktree main "proj-feature" "feature"))
+          (plain (rsr/agent-tmux-test--worktree main "scratch")))
+      (should (equal (car (rsr/agent-tmux-target (expand-file-name "src" main))) "proj"))
+      (should (equal (rsr/agent-tmux-target prefixed)
+                     (cons "proj/feature" (file-name-as-directory prefixed))))
+      (should (equal (car (rsr/agent-tmux-target plain)) "proj/scratch")))))
+
+(ert-deftest rsr/agent-tmux-target-treats-other-git-files-as-own-checkout ()
+  (let ((dir (make-temp-file "tmux-test-sub-" t)))
+    (with-temp-file (expand-file-name ".git" dir)
+      (insert "gitdir: ../.git/modules/lib\n"))
+    (should (equal (car (rsr/agent-tmux-target dir))
+                   (rsr/agent-tmux-session-name (file-name-nondirectory dir))))))
+
+(ert-deftest rsr/agent-tmux-target-matches-real-git-worktree ()
+  (skip-unless (executable-find "git"))
+  (let* ((parent (make-temp-file "tmux-test-realwt-" t))
+         (main (expand-file-name "app" parent))
+         (wt (expand-file-name "app-hotfix" parent)))
+    (make-directory main)
+    (let ((default-directory (file-name-as-directory main)))
+      (call-process "git" nil nil nil "init" "-q")
+      (call-process "git" nil nil nil "-c" "user.email=t@t" "-c" "user.name=t"
+                    "commit" "-q" "--allow-empty" "-m" "init")
+      (call-process "git" nil nil nil "worktree" "add" "-q" "-b" "hotfix" wt))
+    (should (equal (rsr/agent-tmux-target wt)
+                   (cons "app/hotfix" (file-name-as-directory wt))))))
+
+;;; Folders outside git
+
+(ert-deftest rsr/agent-tmux-plain-folder-groups-by-session ()
+  (rsr/agent-tmux-test--with-fake
+      (lambda (args)
+        (if (equal (car args) "display-message")
+            "/Users/me/study-root"
+          (rsr/agent-tmux-test--standard args)))
+    (let* ((dir (make-temp-file "tmux-test-plain-" t))
+           (rsr/agent-tmux--session-paths (make-hash-table :test 'equal))
+           (rsr/agent-sessions--repo-info-cache nil)
+           (proxy (let ((rsr/agent-tmux--target (cons "study" dir))
+                        (rsr/agent-sessions-terminal 'tmux))
+                    (rsr/agent-sessions--create-terminal dir)))
+           (info (rsr/agent-sessions--buffer-repo-info proxy)))
+      (should (equal (plist-get info :repo) "study"))
+      (should (equal (plist-get info :worktree) "study"))
+      (should (equal (plist-get info :repo-root) "/Users/me/study-root/"))
+      (should (equal (plist-get info :worktree-path)
+                     (rsr/agent-sessions--canonical-path dir)))
+      ;; The log keeps the session name as the label, for resume.
+      (should (equal (caar (sqlite-select (rsr/agent-sessions--db)
+                                          "SELECT label FROM sessions"))
+                     "study")))))
+
+(ert-deftest rsr/agent-tmux-resume-in-plain-folder-reuses-session ()
+  (let ((dir (make-temp-file "tmux-test-plain-" t))
+        (repo (make-temp-file "tmux-test-repo-" t))
+        seen)
+    (make-directory (expand-file-name ".git" repo))
+    (cl-letf (((symbol-function 'rsr/agent-sessions--buffer-for-agent-session) #'ignore)
+              ((symbol-function 'rsr/agent-sessions--restore-title) #'ignore)
+              ((symbol-function 'rsr/agent-session-start)
+               (lambda (&rest _) (push rsr/agent-tmux--target seen) nil)))
+      (rsr/agent-sessions--restore-row
+       (list :worktree dir :agent-sid "s1" :agent-type "claude" :label "study"))
+      (rsr/agent-sessions--restore-row
+       (list :worktree repo :agent-sid "s2" :agent-type "claude" :label "main")))
+    (should (equal (nreverse seen) (list (cons "study" dir) nil)))))
+
 ;;; Screen text
 
 (ert-deftest rsr/agent-tmux-faint-text-marks-faint-runs ()
@@ -91,6 +172,22 @@ proxy BODY leaves behind."
                 'rsr/agent-tmux-faint))
     (should-not (get-text-property (string-search "typed" text) 'face text))
     (should-not (get-text-property (string-search "end" text) 'face text))))
+
+(ert-deftest rsr/agent-tmux-faint-text-handles-multi-parameter-sgr ()
+  "Real screens use 38;2;R;G;B and 38;5;N.  Once looped forever (match data
+clobbered by `split-string'); the 2 of 38;2 must not read as faint."
+  (let ((text (with-timeout (2 (ert-fail "faint-text did not terminate"))
+                (rsr/agent-tmux-faint-text
+                 (concat "\e[38;2;255;0;0mred\e[0m "
+                         "\e[2;38;5;240mghost\e[22;39m "
+                         "\e[48;2;1;2;3;1mbold\e[m "
+                         "\e[38:2::9:9:9mcolon\e[0m")))))
+    (should (equal (substring-no-properties text) "red ghost bold colon"))
+    (should-not (get-text-property (string-search "red" text) 'face text))
+    (should (eq (get-text-property (string-search "ghost" text) 'face text)
+                'rsr/agent-tmux-faint))
+    (should-not (get-text-property (string-search "bold" text) 'face text))
+    (should-not (get-text-property (string-search "colon" text) 'face text))))
 
 (ert-deftest rsr/agent-tmux-composer-keeps-inline-completion-distinct ()
   (dolist (case '(("❯ \e[2mrun the tests\e[0m\n────────\n\n\n" . t)
