@@ -5,6 +5,7 @@
 #   emacs-share file [--to TERMINAL-ID] FILE [DESCRIPTION]
 #   emacs-share link linear|pr URL [LABEL]
 #   emacs-share state STATE|--clear
+#   emacs-share folder plans|code PATH
 #
 # `file --to ID' attaches the file to another session's row instead of this
 # one's: an exploration child hands its summary to the parent that opened it
@@ -24,6 +25,7 @@ usage() {
     echo "Usage: emacs-share file [--to TERMINAL-ID] FILE [DESCRIPTION]"
     echo "       emacs-share link linear|pr URL [LABEL]"
     echo "       emacs-share state STATE|--clear"
+    echo "       emacs-share folder plans|code PATH"
   fi
 }
 
@@ -130,6 +132,20 @@ case "$mode" in
     output=$(call "(rsr/agent-sessions-share-link \"$(esc "$EMACS_AGENT_SESSION_ID")\" \"$(esc "$kind")\" \"$(esc "$url")\" \"$(esc "$label")\" \"$(esc "$agent_session_id")\")")
     case "$output" in
       Linked*) printf '%s\n' "$output" ;;
+      *) die "$output" ;;
+    esac
+    ;;
+
+  folder)
+    [ $# -eq 2 ] || { usage >&2; exit 2; }
+    kind=$1
+    case "$kind" in plans|code) ;; *) usage >&2; exit 2 ;; esac
+    dir=$(cd -- "$2" 2>/dev/null && pwd -P) || die "no such directory: $2"
+
+    need_session
+    output=$(call "(rsr/agent-sessions-share-folder \"$(esc "$EMACS_AGENT_SESSION_ID")\" \"$(esc "$kind")\" \"$(esc "$dir")\" \"$(esc "$agent_session_id")\")")
+    case "$output" in
+      Folder*) printf '%s\n' "$output" ;;
       *) die "$output" ;;
     esac
     ;;

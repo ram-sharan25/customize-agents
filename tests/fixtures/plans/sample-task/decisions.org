@@ -1,0 +1,23 @@
+#+title: Decisions — Shouted greeting
+#+status: FINAL
+#+startup: overview
+#+implementation-repository: @REPO@
+#+baseline: @BASELINE@
+#+requirements: @TASK@/requirements.org
+#+plan: @TASK@/plan.org
+
+This file is the protected ledger of decisions explicitly made or confirmed by the user. An agent must consult the user before changing, weakening, or working around any current entry. Facts are not decisions: a disproven premise may be corrected while preserving the user's intended outcome.
+
+* Shouting is a flag, not a new function
+
+=greet= takes an optional leading =--shout= flag.
+
+Why: callers already use =greet=; a flag keeps one entry point.
+
+* Review record
+
+None.
+
+* Superseded decisions
+
+None.

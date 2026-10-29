@@ -14,6 +14,8 @@ code says *what* it does; this file records *why*, so the intent survives edits.
 - `bin/` — commands agents run *inside* a session terminal: `emacs-share`
   (see "Shared files") and `emacs-agent` (see "Orchestration"). On every session
   terminal's PATH.
+- `agent-workflow.el` — the planning workflow's keys (see "Workflow keys").
+- `bin/agent-launch` — the core launcher (see "Workflow keys").
 - `skills/orca/` — the `/orca` skill an agent loads to learn orchestration, and
   the two guides `emacs-agent guide` serves.
 - `orchestration/` — notes on how *Orca* (the app) does the same thing; read
@@ -769,6 +771,38 @@ which are the whole point of these commands existing:
 
 Setup does **not** auto-run install — it writes user config files, so it stays
 an explicit `M-x`. Point users there rather than editing the JSON by hand.
+
+## Workflow keys — a layer on top, not part of the dashboard
+
+`agent-workflow.el` holds the planning workflow's commands: the `C-c i w`
+map (bound in `~/.emacs.d/modules/personal/ai-sessions-config.el`), the
+dashboard's `c` (child of the row's session), `y` (bring in) and `o` (open
+the row's code or Plans folder). It is a separate file because it only *uses*
+the dashboard: everything it needs from `agent-sessions.el` is a public
+entry point or a small helper, and keeping it out stops the 6,800-line
+dashboard file from absorbing a workflow that may change on its own schedule.
+
+**One launcher.** Every session a key opens goes through `bin/agent-launch`,
+the same script agents use to open review, bug-fix and exploration children
+(`explore-session`'s `open-window.sh` is a thin wrapper over it). The script
+decides the command and environment; Emacs only opens the window
+(`rsr/agent-sessions-launch-spawn`, which `rsr/agent-sessions-explore-spawn`
+now delegates to), so a plain-tmux fallback opens the same session. Keys run
+the script asynchronously (`make-process`, reported from the sentinel) with
+`EMACS_SOCKET_NAME` set to this Emacs's socket, so the request comes back to
+the Emacs that asked. It must stay asynchronous: under `call-process` Emacs
+cannot answer the script's `emacsclient`, and both wait forever.
+
+**Registered folders are stored, never derived.** `emacs-share folder plans|code
+PATH` writes the `registered_folders` table under the same durable session
+identity as notes and links (`--session-note-keys`), so a folder registered
+on a bare terminal survives the agent getting an id. A session has one Plans
+folder (a new one replaces it) and any number of code folders (one per
+repository of a multi-repository task). `o c` asks which one when there are
+several; it never falls back to the session's directory, because a planning
+session's directory is the Plans folder and opening it in magit would be a
+guess. The table is not `session_folders`: that name was already the
+dashboard's own folder-grouping table.
 
 ## Editing
 

@@ -609,4 +609,59 @@ shown the tmux session)."
     ;; Only the parent's own window was ever opened.
     (should (= 1 (length (rsr/agent-tmux-test--called "new-window"))))))
 
+;;;; The general launcher (bin/agent-launch)
+
+(ert-deftest rsr/agent-tmux-launch-spawn-child-is-titled-nested-and-briefed ()
+  (rsr/agent-tmux-test--with-explore
+    (let* ((brief (expand-file-name "brief.md" dir))
+           (reply (rsr/agent-sessions-launch-spawn
+                   parent-id "study" dir "review-plan" brief "review-plan"
+                   "claude -n 'review-plan' '/review-plan /t/'"
+                   "LAUNCH_SKILL=review-plan"))
+           (argv (caar (last (rsr/agent-tmux-test--called "new-window"))))
+           (child (seq-find (lambda (b)
+                              (equal (buffer-local-value 'rsr/agent-tmux-window b) "@12"))
+                            (rsr/agent-tmux-proxies)))
+           (child-id (and child (buffer-local-value 'rsr/agent-session-id child))))
+      (should (equal reply (format "Opened @12 %s" child-id)))
+      (should (member "=study:" argv))
+      (should (member "LAUNCH_SKILL=review-plan" argv))
+      (should (member (format "EMACS_AGENT_PARENT=%s" parent-id) argv))
+      (should (equal (car (buffer-local-value 'rsr/agent-session--branched-from child))
+                     "parent-sid"))
+      (should (equal (buffer-local-value 'rsr/agent-session-title-override child)
+                     "review-plan"))
+      (let ((files (rsr/agent-sessions--session-files
+                    (rsr/agent-sessions--session-for-id child-id))))
+        (should (equal (mapcar (lambda (f) (plist-get f :path)) files) (list brief)))
+        (should (equal (plist-get (car files) :label) "brief"))))))
+
+(ert-deftest rsr/agent-tmux-launch-spawn-top-level-has-no-parent ()
+  (rsr/agent-tmux-test--with-explore
+    (let* ((reply (rsr/agent-sessions-launch-spawn
+                   "" "study" dir "plan-implementation" "" "" "claude" ""))
+           (argv (caar (last (rsr/agent-tmux-test--called "new-window"))))
+           (child (seq-find (lambda (b)
+                              (equal (buffer-local-value 'rsr/agent-tmux-window b) "@12"))
+                            (rsr/agent-tmux-proxies))))
+      (should (string-prefix-p "Opened @12 " reply))
+      (should-not (seq-find (lambda (a) (string-prefix-p "EMACS_AGENT_PARENT=" a)) argv))
+      (should-not (buffer-local-value 'rsr/agent-session--branched-from child)))))
+
+(ert-deftest rsr/agent-tmux-launch-spawn-refuses-bad-requests ()
+  (rsr/agent-tmux-test--with-explore
+    (should (string-prefix-p
+             "No Emacs terminal registered"
+             (rsr/agent-sessions-launch-spawn "0-0" "study" dir "x" "" "" "claude" "")))
+    (should (string-prefix-p
+             "No such directory"
+             (rsr/agent-sessions-launch-spawn "" "study" "/no/such/dir/" "x" "" "" "claude" "")))
+    (should (string-prefix-p
+             "No file to attach"
+             (rsr/agent-sessions-launch-spawn "" "study" dir "x" "/no/such/brief.md" "" "claude" "")))
+    (should (string-prefix-p
+             "Refusing"
+             (rsr/agent-sessions-launch-spawn "" "study" dir "x" "" "" "  " "")))
+    (should (= 1 (length (rsr/agent-tmux-test--called "new-window"))))))
+
 ;;; agent-sessions-tmux-test.el ends here

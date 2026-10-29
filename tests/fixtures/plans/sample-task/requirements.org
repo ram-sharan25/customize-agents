@@ -1,0 +1,54 @@
+#+title: Requirements — Shouted greeting
+#+status: FINAL
+#+startup: overview
+#+implementation-repository: @REPO@
+#+baseline: @BASELINE@
+#+decisions: @TASK@/decisions.org
+#+plan: @TASK@/plan.org
+
+* Overview
+
+=greet.sh= prints a polite greeting. The user wants a loud variant for chat bots that shout.
+
+* Goals
+
+- A caller can ask =greet= to shout.
+
+* Non-goals
+
+- Localization.
+- Anti-goal: the default greeting changes in any way.
+
+* Stakeholders and users
+
+- The user, who calls =greet= from shell scripts.
+
+* Requirements
+
+** Functional requirements
+
+- [ ] =greet --shout NAME= prints the greeting in upper case.
+
+** Operational and quality requirements
+
+- [ ] POSIX =sh= only.
+
+* Constraints
+
+- No new dependencies.
+
+* Acceptance criteria
+
+- [ ] =greet --shout Ada= prints =HELLO, ADA!= and =greet Ada= still prints =Hello, Ada!=.
+
+* Assumptions
+
+- None.
+
+* Open questions
+
+None.
+
+* Decisions
+
+See [[file:decisions.org]], the authoritative record of user decisions.

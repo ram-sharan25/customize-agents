@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# clarify-requirements v2 (decisions.org, "Stage contents: clarify requirements").
+source "$(dirname "$0")/lib.sh"
+f="$repo/skills/clarify-requirements/SKILL.md"
+require_stage_common "$f"
+require_text "$f" "(agent's guess:"
+require_regex "$f" "what and why"
+require_regex "$f" "how .*(belongs|goes|is left) .*plan"
+require_regex "$f" "anti-goal"
+require_text "$f" "#+implementation-repository:"
+require_regex "$f" "one .*line per repository|once per repository"
+require_regex "$f" "Why:"
+require_text "$f" "#+issue:"
+require_regex "$f" "baseline"
+require_text "$f" "emacs-share state PLANNING"
+require_text "$f" "emacs-share state PLAN-REVIEW"
+require_text "$f" "review-requirements"
+require_text "$f" "agent-launch"
+forbid_regex "$f" "fresh, user-started session using .review-requirements"
+finish

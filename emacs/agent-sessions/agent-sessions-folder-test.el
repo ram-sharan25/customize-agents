@@ -88,6 +88,7 @@
     (let* ((root (make-temp-file "repo-render-" t))
            (terminal (generate-new-buffer " *render-terminal*"))
            (dashboard (generate-new-buffer " *render-dashboard*"))
+           (rsr/agent-sessions-icons nil)
            (rsr/agent-sessions--states nil)
            (rsr/agent-sessions--notes nil)
            (rsr/agent-sessions--shared-files nil)

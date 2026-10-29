@@ -1102,5 +1102,38 @@
                        '(:agent-type "codex" :agent-sid "unused"))))
       (delete-directory dir t))))
 
+(ert-deftest rsr/agent-sessions-switch-project-prompt-works-on-this-emacs ()
+  "RET on a heading builds the project menu prompt without a void function.
+Emacs 29 names the prompt builder `project--keymap-prompt'; 30 renamed it
+`project--menu-prompt'."
+  (let (prompt)
+    (cl-letf (((symbol-function 'read-key-sequence)
+               (lambda (p &rest _) (setq prompt p) "\C-g")))
+      (should (eq (rsr/agent-sessions--switch-project-read-command) #'ignore)))
+    (should (string-prefix-p "Choose: " prompt))))
+
+(ert-deftest rsr/agent-sessions-dress-keeps-part-faces ()
+  "A part's own face wins over the line face; a highlight's color wins over it."
+  (let ((line (concat "a" (propertize "b" 'font-lock-face 'part))))
+    (let ((plain (rsr/agent-sessions--dress line 'default)))
+      (should (eq (get-text-property 0 'font-lock-face plain) 'default))
+      (should (equal (get-text-property 1 'font-lock-face plain) '(part default))))
+    (let ((hot (rsr/agent-sessions--dress line 'rsr/agent-session-needs-attention)))
+      (should (equal (get-text-property 1 'font-lock-face hot)
+                     '(rsr/agent-session-needs-attention part))))
+    (should-not (get-text-property 1 'font-lock-face "b"))))
+
+(ert-deftest rsr/agent-sessions-icon-off-or-unknown ()
+  (let ((rsr/agent-sessions-icons nil))
+    (should (equal (rsr/agent-sessions--icon 'repo) "")))
+  (let ((rsr/agent-sessions-icons t))
+    (when (require 'nerd-icons nil t)
+      ;; An agent the table does not list falls back to the generic agent icon.
+      (should (equal (rsr/agent-sessions--icon "someagent")
+                     (rsr/agent-sessions--icon 'agent)))
+      (should (plist-get (car (get-text-property 0 'font-lock-face
+                                                 (rsr/agent-sessions--icon 'repo)))
+                         :family)))))
+
 (provide 'agent-sessions-test)
 ;;; agent-sessions-test.el ends here

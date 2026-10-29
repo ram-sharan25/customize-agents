@@ -1,0 +1,313 @@
+#!/bin/sh
+# Open a new agent session with a skill (or a prepared first prompt) loaded:
+# the one launcher behind workflow stage keys, review and bug-fix children,
+# and explore-session.
+#
+#   agent-launch (--skill NAME | --prompt-file FILE) [--task DIR] [--brief FILE]
+#                [--agent claude|pi] [--top | --child] [--parent TERMINAL-ID]
+#                [--slug SLUG --dir OUTDIR] [--cwd DIR] [--name WINDOW]
+#                [--title TITLE] [--attach FILE] [--attach-label LABEL]
+#                [--fork] [--session-file FILE]
+#                [--no-focus] [--env KEY=VALUE]... [--dry-run]
+#
+#   --skill        first prompt is the skill's command with the task folder:
+#                    claude: /NAME TASK      pi: /skill:NAME TASK
+#                  followed by the --brief file's text, when given
+#   --prompt-file  first prompt is this file's text, as is (explore briefs)
+#   --top          a session of its own (the default)
+#   --child        a child of the calling session (or of --parent): it gets
+#                  the parent's identity in its environment so it can report
+#                  back, and a dashboard row nested under the parent
+#   --slug/--dir   the child's short name and output directory (findings go
+#                  there); required with --child
+#   --title        the dashboard row's title; --attach a file to show under it
+#   --dry-run      print what would be run and open nothing
+#
+# A child's report-back variables keep the EXPLORE_ prefix: explore-session's
+# parent-address.sh and its Pi extension read them, and every child reports
+# back the same way an exploration does.
+#
+# How the window opens: Emacs first, when one is reachable (it gives the new
+# session a tracked id, a dashboard row and `emacs-share'), else a plain tmux
+# window in the caller's tmux session, else nothing (exit 2).
+# Facts this relies on (verified 2026-10-28, tmux 3.7c), from open-window.sh:
+#   * `tmux display-message' without -t reports the attached CLIENT's active
+#     pane, so the caller is identified through $TMUX_PANE.
+#   * New windows inherit the tmux server's environment, not the caller's, so
+#     identity reaches the child through `env K=V' in the window command, and
+#     agent-process markers are unset there.
+
+set -eu
+
+die() { printf 'agent-launch: %s\n' "$1" >&2; exit "${2:-1}"; }
+usage() { sed -n '6,26p' "$0" | sed -e 's/^# \{0,1\}//' >&2; }
+# Single-quote STRING for a POSIX shell.
+shq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+
+skill=""; prompt_file=""; task=""; brief=""; agent=claude; mode=top
+parent_id=${EMACS_AGENT_SESSION_ID:-}; slug=""; dir=""; cwd=""; name=""
+title=""; attach=""; attach_label=""; fork=""; session_file=""; focus=1; dry_run=""
+envs=""   # newline-separated KEY=VALUE
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --skill) skill=${2:-}; shift 2 ;;
+    --prompt-file) prompt_file=${2:-}; shift 2 ;;
+    --task) task=${2:-}; shift 2 ;;
+    --brief) brief=${2:-}; shift 2 ;;
+    --agent) agent=${2:-}; shift 2 ;;
+    --top) mode=top; shift ;;
+    --child) mode=child; shift ;;
+    --parent) parent_id=${2:-}; shift 2 ;;
+    --slug) slug=${2:-}; shift 2 ;;
+    --dir) dir=${2:-}; shift 2 ;;
+    --cwd) cwd=${2:-}; shift 2 ;;
+    --name) name=${2:-}; shift 2 ;;
+    --title) title=${2:-}; shift 2 ;;
+    --attach) attach=${2:-}; shift 2 ;;
+    --attach-label) attach_label=${2:-}; shift 2 ;;
+    --fork) fork=1; shift ;;
+    --session-file) session_file=${2:-}; shift 2 ;;
+    --no-focus) focus=""; shift ;;
+    --focus) focus=1; shift ;;
+    --env) envs="$envs
+${2:-}"; shift 2 ;;
+    --dry-run) dry_run=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "unknown option: $1" 2 ;;
+  esac
+done
+
+# --- Arguments ---------------------------------------------------------------
+[ -n "$skill" ] || [ -n "$prompt_file" ] || { usage; die "--skill or --prompt-file is required" 2; }
+[ -z "$skill" ] || [ -z "$prompt_file" ] || die "--skill and --prompt-file are exclusive" 2
+[ -z "$skill" ] || printf '%s' "$skill" | grep -Eq '^[a-z0-9][a-z0-9-]*$' || die "bad skill name: $skill" 2
+if [ -n "$task" ]; then
+  task=$(cd -- "$task" 2>/dev/null && pwd -P) || die "no such task folder: $task"
+  task="$task/"
+fi
+if [ -n "$brief" ]; then
+  [ -s "$brief" ] || die "brief not found or empty: $brief"
+  brief="$(cd -- "$(dirname -- "$brief")" && pwd -P)/$(basename -- "$brief")"
+fi
+if [ -n "$prompt_file" ]; then
+  [ -s "$prompt_file" ] || die "prompt file not found or empty: $prompt_file"
+  prompt_file="$(cd -- "$(dirname -- "$prompt_file")" && pwd -P)/$(basename -- "$prompt_file")"
+fi
+[ -n "$cwd" ] || cwd=${task:-$(pwd -P)}
+cwd=$(cd -- "$cwd" 2>/dev/null && pwd -P) || die "no such cwd: $cwd"
+if [ "$mode" = child ]; then
+  [ -n "$slug" ] || die "--child needs --slug" 2
+  printf '%s' "$slug" | grep -Eq '^[a-z0-9][a-z0-9-]{0,47}$' || die "bad slug: $slug" 2
+  [ -n "$dir" ] || die "--child needs --dir (where the child writes its findings)" 2
+  mkdir -p -- "$dir"
+  dir=$(cd -- "$dir" && pwd -P)
+fi
+if [ -z "$name" ]; then
+  if [ -n "$slug" ]; then name="${skill:-explore}-$slug"; else name=${skill:-session}; fi
+  [ "$slug" != "$skill" ] || name=$skill
+fi
+[ -n "$attach" ] || attach=${brief:-$prompt_file}
+case "$agent" in
+  claude|pi) ;;
+  codex) die "codex is deferred; see skills/explore-session/SKILL.md" 4 ;;
+  *) die "unsupported agent: $agent (claude, pi)" 2 ;;
+esac
+
+# --- The first prompt and the agent's command --------------------------------
+prompt_expr() {
+  if [ -n "$prompt_file" ]; then
+    printf '"$(cat %s)"' "$(shq "$prompt_file")"
+    return
+  fi
+  case "$agent" in
+    claude) line="/$skill${task:+ $task}" ;;
+    pi) line="/skill:$skill${task:+ $task}" ;;
+  esac
+  if [ -n "$brief" ]; then
+    # One line on purpose: Emacs types this command into a terminal.
+    fmt="'%s\\n\\n'"
+    printf '"$(printf %s %s; cat %s)"' "$fmt" "$(shq "$line")" "$(shq "$brief")"
+  else
+    shq "$line"
+  fi
+}
+
+agent_command() {
+  p=$(prompt_expr)
+  case "$agent" in
+    claude)
+      if [ -n "$fork" ]; then
+        [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] ||
+          die "--fork for claude needs \$CLAUDE_CODE_SESSION_ID (run from the parent's Bash tool)"
+        printf 'claude --resume %s --fork-session -n %s %s' \
+          "$(shq "$CLAUDE_CODE_SESSION_ID")" "$(shq "$name")" "$p"
+      else
+        printf 'claude -n %s %s' "$(shq "$name")" "$p"
+      fi ;;
+    pi)
+      if [ -n "$fork" ]; then
+        [ -n "$session_file" ] && [ -s "$session_file" ] ||
+          die "--fork for pi needs --session-file FILE (the branch copy the extension writes)"
+        printf 'pi --session %s -n %s %s' "$(shq "$session_file")" "$(shq "$name")" "$p"
+      else
+        printf 'pi -n %s %s' "$(shq "$name")" "$p"
+      fi ;;
+  esac
+}
+cmd=$(agent_command) || exit 1
+shell=${SHELL:-/bin/sh}
+# Run the agent, then leave a login shell so the window survives the agent.
+window_cmd="$cmd; exec $(shq "$shell") -l"
+
+# --- Who is calling ------------------------------------------------------------
+# Inside tmux, the calling pane is the parent (for --child) and its tmux
+# session is where a plain-tmux window opens.  AGENT_LAUNCH_FAKE_PANE stands in
+# for `tmux display-message' in tests.
+session=""; parent_window=""; parent_index=""; parent_tmux=""
+if [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ]; then
+  if [ -n "${AGENT_LAUNCH_FAKE_PANE:-}" ]; then
+    self=$AGENT_LAUNCH_FAKE_PANE
+  else
+    command -v tmux >/dev/null 2>&1 || die "tmux not found" 2
+    self=$(tmux display-message -p -t "$TMUX_PANE" \
+      '#{session_name}	#{window_id}	#{window_index}	#{pane_id}') ||
+      die "tmux could not describe pane $TMUX_PANE"
+  fi
+  session=$(printf '%s' "$self" | cut -f1)
+  parent_window=$(printf '%s' "$self" | cut -f2)
+  parent_index=$(printf '%s' "$self" | cut -f3)
+  parent_tmux="$session:$parent_window.$(printf '%s' "$self" | cut -f4)"
+fi
+if [ "$mode" = child ] && [ -z "$parent_tmux" ] && [ -z "$parent_id" ]; then
+  die "--child needs to run inside the parent's tmux pane or name --parent; nothing opened" 2
+fi
+
+# --- Environment for the new session ----------------------------------------
+# Markers that must not leak from a server started inside an agent, plus the
+# caller's own identity so nothing stale is inherited.
+unset_vars="CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_CHILD_SESSION
+CLAUDE_CODE_SESSION_ID CLAUDE_PID CLAUDE_CODE_MESSAGING_SOCKET
+CLAUDE_CODE_MESSAGING_TOKEN CLAUDE_CODE_EXECPATH CLAUDE_CODE_SESSION_ATTENDED
+CLAUDE_EFFORT AI_AGENT PI_CODING_AGENT_DIR PI_CODING_AGENT PI_SESSION_ID
+PI_SESSION_FILE PI_PROVIDER PI_MODEL PI_REASONING_LEVEL
+EXPLORE_SLUG EXPLORE_DIR EXPLORE_PARENT_AGENT EXPLORE_PARENT_TMUX
+EXPLORE_PARENT_PID EXPLORE_PARENT_SESSION_ID EXPLORE_PARENT_NAME
+EXPLORE_PARENT_SOCKET LAUNCH_SKILL LAUNCH_TASK"
+
+child_env=""
+add_env() { child_env="${child_env:+$child_env
+}$1"; }
+[ -z "$skill" ] || add_env "LAUNCH_SKILL=$skill"
+[ -z "$task" ] || add_env "LAUNCH_TASK=$task"
+if [ "$mode" = child ]; then
+  add_env "EXPLORE_SLUG=$slug"
+  add_env "EXPLORE_DIR=$dir"
+  if [ -n "$parent_tmux" ]; then
+    # The parent's agent is the one running in the calling pane.
+    if [ -n "${CLAUDE_PID:-}" ]; then parent_agent=claude
+    elif [ -n "${PI_CODING_AGENT:-}${PI_SESSION_ID:-}" ]; then parent_agent=pi
+    else parent_agent=$agent; fi
+    add_env "EXPLORE_PARENT_AGENT=$parent_agent"
+    add_env "EXPLORE_PARENT_TMUX=$parent_tmux"
+    [ -z "${CLAUDE_PID:-}" ] || add_env "EXPLORE_PARENT_PID=$CLAUDE_PID"
+    [ -z "${CLAUDE_CODE_SESSION_ID:-}" ] ||
+      add_env "EXPLORE_PARENT_SESSION_ID=$CLAUDE_CODE_SESSION_ID"
+    address=$(dirname -- "$0")/../../../skills/explore-session/scripts/parent-address.sh
+    if [ -n "${CLAUDE_PID:-}" ] && [ -x "$address" ] &&
+       pname=$("$address" --field name 2>/dev/null); then
+      [ -z "$pname" ] || add_env "EXPLORE_PARENT_NAME=$pname"
+    fi
+  fi
+fi
+oldifs=$IFS; IFS='
+'
+for kv in $envs; do
+  [ -n "$kv" ] || continue
+  case "$kv" in *=*) add_env "$kv" ;; *) IFS=$oldifs; die "--env needs KEY=VALUE: $kv" 2 ;; esac
+done
+IFS=$oldifs
+
+if [ -n "$dry_run" ]; then
+  printf 'mode:   %s\n' "$mode"
+  printf 'agent:  %s\n' "$agent"
+  printf 'cwd:    %s\n' "$cwd"
+  printf 'name:   %s\n' "$name"
+  [ -z "$parent_id" ] || printf 'parent: terminal %s\n' "$parent_id"
+  printf 'command: %s\n' "$cmd"
+  printf '%s\n' "$child_env" | sed -n 's/^./env:    &/p'
+  exit 0
+fi
+
+# --- Open the window --------------------------------------------------------
+# Through Emacs when one answers.  Emacs runs the same `env' list and types
+# this same command; only the opener differs.  Anything short of success falls
+# back to plain tmux and says so on stderr.
+via=tmux; window=""; index="?"
+elisp_esc() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
+elisp_unquote() { printf '%s' "$1" | sed -e 's/^"//' -e 's/"$//' -e 's/\\"/"/g' -e 's/\\\\/\\/g'; }
+open_through_emacs() {
+  command -v emacsclient >/dev/null 2>&1 || return 1
+  child_parent=""; [ "$mode" = child ] && child_parent=$parent_id
+  # A top-level session started from an Emacs-tracked terminal is not nested.
+  detached=nil; [ -n "$focus" ] || detached=t
+  reply=$(emacsclient -e "(rsr/agent-sessions-launch-spawn \
+\"$(elisp_esc "$child_parent")\" \"$(elisp_esc "$session")\" \
+\"$(elisp_esc "$cwd")\" \"$(elisp_esc "$name")\" \"$(elisp_esc "$attach")\" \
+\"$(elisp_esc "$title")\" \"$(elisp_esc "$cmd")\" \"$(elisp_esc "$child_env")\" \
+$detached \"$(elisp_esc "${attach_label:-brief}")\")" 2>&1) || {
+    printf 'agent-launch: Emacs did not answer (%s); opening with plain tmux\n' "$reply" >&2
+    return 1
+  }
+  reply=$(elisp_unquote "$reply")
+  case "$reply" in
+    Opened\ @*) ;;
+    *) printf 'agent-launch: Emacs declined (%s); opening with plain tmux\n' "$reply" >&2
+       return 1 ;;
+  esac
+  window=$(printf '%s' "$reply" | cut -d' ' -f2)
+  via="emacs (terminal $(printf '%s' "$reply" | cut -d' ' -f3))"
+  [ -z "$session" ] || index=$(tmux display-message -p -t "$window" '#{window_index}' 2>/dev/null) || index='?'
+}
+
+if ! open_through_emacs; then
+  [ -n "$session" ] || die "no Emacs answered and this is not inside tmux; nothing opened" 2
+  tmux has-session -t "=$session" 2>/dev/null || die "tmux session '$session' not found"
+  set -- env
+  for v in $unset_vars; do set -- "$@" -u "$v"; done
+  oldifs=$IFS; IFS='
+'
+  for kv in $child_env; do set -- "$@" "$kv"; done
+  IFS=$oldifs
+  set -- "$@" "$shell" -l -c "$window_cmd"
+  if [ -n "$focus" ]; then
+    out=$(tmux new-window -t "=$session:" -n "$name" -c "$cwd" -P -F '#{window_id}	#{window_index}' "$@")
+  else
+    out=$(tmux new-window -d -t "=$session:" -n "$name" -c "$cwd" -P -F '#{window_id}	#{window_index}' "$@")
+  fi || die "tmux new-window failed"
+  window=$(printf '%s' "$out" | cut -f1)
+  index=$(printf '%s' "$out" | cut -f2)
+fi
+
+# Tag both ends so either side can find the other later, without any database.
+if [ "$mode" = child ] && [ -n "$parent_window" ]; then
+  tmux set-option -w -t "$window" @explore-parent "$parent_tmux" >/dev/null 2>&1 || true
+  tmux set-option -w -t "$window" @explore-dir "$dir" >/dev/null 2>&1 || true
+  tmux set-option -w -t "$window" @explore-slug "$slug" >/dev/null 2>&1 || true
+  tmux set-option -w -t "$window" @explore-agent "$agent" >/dev/null 2>&1 || true
+  children=$(tmux show-option -wqv -t "$parent_window" @explore-children 2>/dev/null || true)
+  tmux set-option -w -t "$parent_window" @explore-children "${children:+$children }$window=$slug" >/dev/null 2>&1 || true
+fi
+
+kind=brief; [ -z "$fork" ] || kind=fork
+printf 'opened: tmux window %s (index %s, name %s)%s\n' "$window" "$index" "$name" "${session:+ in session $session}"
+printf 'via:    %s\n' "$via"
+printf 'child:  %s (%s) in %s\n' "$agent" "$kind" "$cwd"
+[ -z "$skill" ] || printf 'skill:  %s%s\n' "$skill" "${task:+ $task}"
+[ -z "$attach" ] || printf 'brief:  %s\n' "$attach"
+[ -z "$dir" ] || printf 'dir:    %s\n' "$dir"
+[ -z "$parent_window" ] || [ "$mode" != child ] ||
+  printf 'parent: window %s (index %s)\n' "$parent_window" "$parent_index"
+[ "$index" = "?" ] || printf 'switch: tmux select-window -t %s   (prefix %s%s)\n' \
+  "$window" "$index" "${parent_index:+; back: prefix $parent_index}"
+[ -n "$focus" ] || printf 'focus:  left on the calling window (--no-focus)\n'

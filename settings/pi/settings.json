@@ -6,7 +6,6 @@
   "defaultThinkingLevel": "medium",
   "enableSkillCommands": true,
   "packages": [
-    "/Users/rrimal/fleet/hooks/pi",
     {
       "source": "/Users/rrimal/Stillness/Development/plannotator/apps/pi-extension",
       "skills": []

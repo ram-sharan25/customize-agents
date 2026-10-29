@@ -82,6 +82,26 @@ files, optional slug / task_dir / fork / focus / start_now). It does steps
 5. Reply in two or three lines: the window index/name, `$DIR`, and that you
    will keep working here. Do not read the brief back. Do not watch the child.
 
+## Why-not explorations (grilling one decision)
+
+When the user wants a recorded choice defended ("why not X?", "grill this
+decision"), open the exploration as above with the slug `why-not-<topic>`
+under the task's `artifacts/`, and put the decision's location
+(`decisions.org` or `plan.org`, and its heading) in the brief's context. The
+child's `findings.md` then has exactly these parts, in this order:
+
+1. **The choice questioned** — quoted, with an Org link to its entry.
+2. **What it must achieve** — the goals, requirements, and acceptance
+   criteria from `requirements.org` that the choice serves, linked.
+3. **Each alternative, and why not** — one subsection per alternative, with
+   evidence (a file and function, a command and its output, or a source).
+4. **Verdict** — a proposal only: keep the choice, or change it to an
+   alternative. The user decides.
+5. **The link back** — only after the user says yes, add one line under the
+   original decision: `Why-not: [[file:artifacts/<dir>/findings.md]]`.
+   Never change the decision itself; a changed decision goes through the
+   stage that owns the document.
+
 ## B. Report back (child; only when the user says so)
 
 1. Write or refresh `$EXPLORE_DIR/findings.md` (any length).
@@ -125,6 +145,12 @@ e.g. "Noted — say *bring in <slug>* when you want the summary." Do not open
 any file and do not summarize anything yet.
 
 ## Mechanics worth knowing
+
+- `open-window.sh` is a thin wrapper over the workflow's core launcher,
+  `emacs/agent-sessions/bin/agent-launch` (on every dashboard session's
+  PATH), which also opens review and bug-fix children and the `C-c i w`
+  sessions. Every child of that launcher reports back the way section B
+  describes, which is why its variables keep the `EXPLORE_` prefix.
 
 - Same tmux session: `open-window.sh` identifies this pane through
   `$TMUX_PANE` and runs `tmux new-window -t "=<session>:"`. The new window is

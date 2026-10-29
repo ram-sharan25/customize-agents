@@ -176,6 +176,12 @@ Toggle with `s' \(`rsr/agent-sessions-toggle-sort').")
   "When non-nil, display repo → folder → session.
 The other view displays repo → worktree → session.  Toggle with `f'.")
 
+(defcustom rsr/agent-sessions-icons t
+  "When non-nil, start each dashboard line with an icon saying what it is.
+Icons come from `nerd-icons' and are left out when it is not installed."
+  :type 'boolean
+  :group 'rsr/agent-sessions)
+
 (defconst rsr/agent-session-status-alist
   '((claude . ((SessionStart . stopped)
                (Stop . needs-attention)
@@ -1121,6 +1127,128 @@ not push the titles of stated rows out of line with unstated ones."
 (defvar-local rsr/agent-sessions--worktree-column-width 1
   "Width of the worktree name column in the current dashboard render.")
 
+;;;; Line icons and part faces
+;;
+;; Every kind of line gets an icon, and the parts of a line their own face, so
+;; a repo, a directory group, a session, a file and a link read differently at
+;; a glance.  The faces inherit theme faces, so they follow light and dark
+;; themes; customize any of them by name.
+
+(defface rsr/agent-session-repo
+  '((t :inherit (font-lock-keyword-face bold)))
+  "Face for a repo heading.")
+
+(defface rsr/agent-session-agent
+  '((t :inherit font-lock-keyword-face))
+  "Face for the agent name on a session row.")
+
+(defface rsr/agent-session-status-running
+  '((t :inherit success))
+  "Face for the `running' status word.")
+
+(defface rsr/agent-session-status-idle
+  '((t :inherit font-lock-constant-face))
+  "Face for the `idle' status word.")
+
+(defface rsr/agent-session-status-stopped
+  '((t :inherit shadow))
+  "Face for the `stopped' status word.")
+
+(defface rsr/agent-session-status
+  '((t :inherit font-lock-type-face))
+  "Face for any other status word.")
+
+(defface rsr/agent-session-worktree-name
+  '((t :inherit font-lock-string-face))
+  "Face for the worktree column of a session row in the folder view.")
+
+(defface rsr/agent-session-detail
+  '((t :inherit shadow))
+  "Face for a session row's trailing details: folder, `↳ from', branch.")
+
+(defface rsr/agent-session-file-name
+  '((t :inherit font-lock-function-name-face))
+  "Face for the name of a shared file.")
+
+(defface rsr/agent-session-file-label
+  '((t :inherit shadow))
+  "Face for the label after a shared file's name.")
+
+(defface rsr/agent-session-link-kind
+  '((t :inherit font-lock-builtin-face))
+  "Face for the kind label of a shared link.")
+
+(defconst rsr/agent-sessions--icon-specs
+  '((repo nerd-icons-octicon "nf-oct-repo" rsr/agent-session-repo)
+    (worktree nerd-icons-octicon "nf-oct-file_directory" font-lock-function-name-face)
+    (folder nerd-icons-mdicon "nf-md-folder_star" font-lock-function-name-face)
+    (note nerd-icons-mdicon "nf-md-note_text_outline" rsr/agent-session-note)
+    (link nerd-icons-octicon "nf-oct-link_external" rsr/agent-session-link-kind)
+    ("claude" nerd-icons-mdicon "nf-md-robot" font-lock-constant-face)
+    ("pi" nerd-icons-mdicon "nf-md-pi" font-lock-type-face)
+    ("codex" nerd-icons-mdicon "nf-md-code_braces" font-lock-string-face)
+    (agent nerd-icons-mdicon "nf-md-robot_outline" rsr/agent-session-agent))
+  "(KIND FUNCTION NAME FACE) for each line icon.
+KIND is a line kind, or an agent type string for a session row (`agent' for an
+agent not listed); FACE colors the icon.")
+
+(declare-function nerd-icons-icon-for-file "nerd-icons")
+
+(defun rsr/agent-sessions--icon (kind &optional file)
+  "The icon for line KIND and a space, or \"\" with icons off or unavailable.
+With FILE, the icon is the one `nerd-icons' gives that file's type.  The
+icon's font goes on `font-lock-face': these buffers run font-lock, which
+strips a plain `face', and without its font the glyph does not render."
+  (if (not (and rsr/agent-sessions-icons (require 'nerd-icons nil t)))
+      ""
+    (let* ((spec (and (not file)
+                      (or (assoc kind rsr/agent-sessions--icon-specs)
+                          (assq 'agent rsr/agent-sessions--icon-specs))))
+           (icon (if file
+                     (nerd-icons-icon-for-file file)
+                   (funcall (nth 1 spec) (nth 2 spec))))
+           (font (get-text-property 0 'face icon)))
+      (concat (propertize (substring-no-properties icon) 'font-lock-face
+                          (if spec (list font (nth 3 spec)) font))
+              " "))))
+
+(defconst rsr/agent-sessions--highlight-faces
+  '(rsr/agent-session-needs-attention rsr/agent-session-error
+    rsr/agent-session-file-unvisited rsr/agent-session-link-unvisited)
+  "Line faces that must keep their color over the parts' own faces.")
+
+(defun rsr/agent-sessions--dress (string face)
+  "STRING with FACE as the `font-lock-face' of every part, layered with its own.
+A plain `propertize' would replace an icon's font and the parts' colors.  A
+part's own face wins, except under a highlight face (attention, error, an
+unopened file or link), whose color must hold across the whole line."
+  (let ((s (copy-sequence string))
+        (pos 0)
+        (len (length string)))
+    (while (< pos len)
+      (let ((end (next-single-property-change pos 'font-lock-face s len))
+            (own (get-text-property pos 'font-lock-face s)))
+        (put-text-property pos end 'font-lock-face
+                           (cond ((null own) face)
+                                 ((memq face rsr/agent-sessions--highlight-faces)
+                                  (list face own))
+                                 (t (list own face)))
+                           s)
+        (setq pos end)))
+    s))
+
+(defun rsr/agent-sessions--status-face (status)
+  "The face for the STATUS word on a session row."
+  (pcase status
+    ('running 'rsr/agent-session-status-running)
+    ('idle 'rsr/agent-session-status-idle)
+    ('stopped 'rsr/agent-session-status-stopped)
+    (_ 'rsr/agent-session-status)))
+
+(defun rsr/agent-sessions--detail (string)
+  "STRING in `rsr/agent-session-detail', or \"\" for an empty one."
+  (if (string-empty-p string) "" (propertize string 'font-lock-face 'rsr/agent-session-detail)))
+
 (defun rsr/agent-sessions--row-text (prefix state suffix face)
   "Build a session row: PREFIX, STATE in its own column, then SUFFIX.
 FACE dresses the whole row (it is what spans an attention highlight across it),
@@ -1129,7 +1257,7 @@ because the state faces set a foreground and the row face sets a background, and
 either replacing the row face or letting it win would lose one of the two."
   (let* ((column (format (format "%%-%ds" (rsr/agent-sessions--state-column-width))
                          (or state "")))
-         (row (propertize (concat prefix column suffix) 'font-lock-face face))
+         (row (rsr/agent-sessions--dress (concat prefix column suffix) face))
          (state-face (and state (rsr/agent-sessions--state-face state))))
     (when state-face
       ;; A *list* of faces on `font-lock-face', not `add-face-text-property':
@@ -1175,24 +1303,32 @@ indentation conveys the relationship."
         (rsr/agent-sessions--row-text
          (concat base indent
                  (when rsr/agent-sessions-group-by-folder
-                   (format
-                    (format "%%-%ds" rsr/agent-sessions--worktree-column-width)
-                    (rsr/agent-sessions--session-worktree-name session)))
+                   (propertize
+                    (format
+                     (format "%%-%ds" rsr/agent-sessions--worktree-column-width)
+                     (rsr/agent-sessions--session-worktree-name session))
+                    'font-lock-face 'rsr/agent-session-worktree-name))
                  marker
-                 (format "%-7s %-16s "
-                         (or (plist-get session :agent-type) "") status))
+                 (rsr/agent-sessions--icon (plist-get session :agent-type))
+                 (propertize (format "%-7s " (or (plist-get session :agent-type) ""))
+                             'font-lock-face 'rsr/agent-session-agent)
+                 (propertize (format "%-16s " status)
+                             'font-lock-face (rsr/agent-sessions--status-face status)))
          (rsr/agent-sessions--session-state session)
-         (format "%s%s%s%s%s\n"
-                 title
+         (concat title
                  (rsr/agent-orchestration--row-badge id)
-                 (if folder (format "  [%s]" (plist-get folder :name)) "")
-                 (if (and branched-from (not suppress-parent-note))
-                     (format "  ↳ from %s" (cdr branched-from))
-                   "")
-                 (if-let ((branch (and rsr/agent-sessions-group-by-folder
-                                      (rsr/agent-sessions--session-branch session))))
-                     (format "  (%s)" branch)
-                   ""))
+                 (rsr/agent-sessions--detail
+                  (if folder (format "  [%s]" (plist-get folder :name)) ""))
+                 (rsr/agent-sessions--detail
+                  (if (and branched-from (not suppress-parent-note))
+                      (format "  ↳ from %s" (cdr branched-from))
+                    ""))
+                 (rsr/agent-sessions--detail
+                  (if-let ((branch (and rsr/agent-sessions-group-by-folder
+                                       (rsr/agent-sessions--session-branch session))))
+                      (format "  (%s)" branch)
+                    ""))
+                 "\n")
          face))
       (rsr/agent-sessions--insert-note
        (rsr/agent-sessions--session-note-keys session)
@@ -1528,7 +1664,18 @@ order (e.g. for buffers with no creation stamp)."
        shared_at  INTEGER NOT NULL,
        updated_at INTEGER NOT NULL,
        visited_at INTEGER,
-       PRIMARY KEY (owner_kind, owner_key, url))")
+       PRIMARY KEY (owner_kind, owner_key, url))"
+
+    ;; Folders a workflow stage registered for its session: the task's Plans
+    ;; folder and its code folder(s).  They are not rendered as rows; `o' on
+    ;; the dashboard opens them (agent-workflow.el).
+    "CREATE TABLE IF NOT EXISTS registered_folders (
+       owner_kind  TEXT    NOT NULL,
+       owner_key   TEXT    NOT NULL,
+       folder_kind TEXT    NOT NULL,
+       path        TEXT    NOT NULL,
+       shared_at   INTEGER NOT NULL,
+       PRIMARY KEY (owner_kind, owner_key, folder_kind, path))")
   "Statements that bring an empty or existing database up to date.
 Schema migrations are handled by `rsr/agent-sessions--db-migrate'.")
 
@@ -2463,8 +2610,12 @@ note's identity is its key — not its position or text."
     (let ((lines (split-string (cdr found) "\n")))
       (magit-insert-section (rsr/agent-session-note (car found))
         (magit-insert-heading
-          (propertize (concat indent "· " (car lines))
-                      'font-lock-face 'rsr/agent-session-note))
+          (rsr/agent-sessions--dress
+           (concat indent
+                   (let ((icon (rsr/agent-sessions--icon 'note)))
+                     (if (string-empty-p icon) "· " icon))
+                   (car lines))
+           'rsr/agent-session-note))
         (dolist (line (cdr lines))
           (insert (propertize (concat indent "  " line "\n")
                               'font-lock-face 'rsr/agent-session-note)))))))
@@ -3145,6 +3296,97 @@ string for `emacs-share link'."
       (rsr/agent-sessions--refresh-if-visible)
       (format "Linked %s: %s" kind url)))))
 
+;;;; Registered folders (`emacs-share folder plans|code PATH')
+
+(defvar rsr/agent-sessions--registered-folders nil
+  "Hash table (KEY . FOLDER-KIND) -> list of paths, or nil before first load.
+KEY is the durable session identity used by notes and links; FOLDER-KIND is
+\"plans\" or \"code\".  Backed by the `registered_folders' table.")
+
+(defconst rsr/agent-sessions--folder-kinds '("plans" "code")
+  "Folder kinds a session can register.")
+
+(defun rsr/agent-sessions--registered-folders-table ()
+  "Return the registered-folders table, loading it from the database once."
+  (or rsr/agent-sessions--registered-folders
+      (setq rsr/agent-sessions--registered-folders
+            (let ((table (make-hash-table :test 'equal)))
+              (pcase-dolist (`(,owner-kind ,owner-key ,kind ,path)
+                             (sqlite-select
+                              (rsr/agent-sessions--db)
+                              "SELECT owner_kind, owner_key, folder_kind, path
+                                 FROM registered_folders ORDER BY shared_at, rowid"))
+                (let ((key (cons (list owner-kind owner-key) kind)))
+                  (puthash key (append (gethash key table) (list path)) table)))
+              table))))
+
+(defun rsr/agent-sessions--session-folder-paths (session kind)
+  "Folders of KIND (\"plans\" or \"code\") registered for SESSION, oldest first.
+Every identity the session has held is read, like notes and links, so a
+folder registered on a bare terminal is still found once the agent has an id."
+  (let ((table (rsr/agent-sessions--registered-folders-table))
+        paths)
+    (dolist (key (rsr/agent-sessions--session-note-keys session))
+      (dolist (path (gethash (cons key kind) table))
+        (unless (member path paths)
+          (setq paths (append paths (list path))))))
+    paths))
+
+(defun rsr/agent-sessions--register-folder (session kind path)
+  "Register PATH as SESSION's folder of KIND.
+A session works on one task, so a new Plans folder replaces the old one; a
+task may span several repositories, so code folders accumulate, each once."
+  (let ((keys (rsr/agent-sessions--session-note-keys session))
+        (table (rsr/agent-sessions--registered-folders-table))
+        (db (rsr/agent-sessions--db)))
+    (unless keys
+      (error "Session has no durable identity to register a folder on"))
+    (let* ((primary (car keys))
+           (slot (cons primary kind))
+           (paths (gethash slot table)))
+      (with-sqlite-transaction db
+        (when (equal kind "plans")
+          (sqlite-execute db "DELETE FROM registered_folders
+                               WHERE owner_kind = ? AND owner_key = ?
+                                 AND folder_kind = ?"
+                          (append primary (list kind)))
+          (setq paths nil))
+        (unless (member path paths)
+          (sqlite-execute db "INSERT OR IGNORE INTO registered_folders
+                              VALUES (?, ?, ?, ?, ?)"
+                          (append primary
+                                  (list kind path (rsr/agent-sessions--now))))
+          (setq paths (append paths (list path)))))
+      (puthash slot paths table)
+      paths)))
+
+;;;###autoload
+(defun rsr/agent-sessions-share-folder (session-id kind path &optional
+                                                  agent-session-id)
+  "Register PATH as the KIND folder of the session in terminal SESSION-ID.
+The `emacs-share folder' entry point: a workflow stage tells the dashboard
+where its task's Plans folder and code live, so `o' can open them without
+guessing.  KIND is \"plans\" or \"code\".  SESSION-ID and AGENT-SESSION-ID
+resolve as in `rsr/agent-sessions-share-link'.  Returns a printable status."
+  (let ((session (rsr/agent-sessions--session-for-share
+                  session-id agent-session-id))
+        (path (and path (not (string-empty-p path))
+                   (file-name-as-directory (expand-file-name path)))))
+    (cond
+     ((null session)
+      (if (and agent-session-id (not (string-empty-p agent-session-id)))
+          (format "No Emacs agent session registered for agent id %s"
+                  agent-session-id)
+        (format "No Emacs terminal registered for session id %s" session-id)))
+     ((not (member kind rsr/agent-sessions--folder-kinds))
+      (format "Unknown folder kind `%s'; expected plans or code" kind))
+     ((or (null path) (not (file-directory-p path)))
+      (format "No such directory: %s" (or path "")))
+     (t
+      (rsr/agent-sessions--register-folder session kind path)
+      (rsr/agent-sessions--refresh-if-visible)
+      (format "Folder %s: %s" kind path)))))
+
 (defun rsr/agent-sessions--file-at-point ()
   "Return (SESSION PATH FILE) for the shared-file row at point, or nil.
 Point may be on the row itself or inside a note rendered under it, which
@@ -3299,11 +3541,14 @@ not make them learn two highlights for it.")
           rsr/agent-sessions--row-status)
     (magit-insert-section (rsr/agent-session-link url t)
       (magit-insert-heading
-       (propertize
+       (rsr/agent-sessions--dress
         (concat indent (if unvisited "● " "  ")
-                (format "%-28s %s\n" kind-label
-                        (or (plist-get link :label) url)))
-        'font-lock-face (if unvisited
+                (rsr/agent-sessions--icon 'link)
+                (propertize (format "%-28s " kind-label)
+                            'font-lock-face 'rsr/agent-session-link-kind)
+                (or (plist-get link :label) url)
+                "\n")
+        (if unvisited
                             'rsr/agent-session-link-unvisited
                           'rsr/agent-session-link)))
       (rsr/agent-sessions--insert-note
@@ -3337,15 +3582,18 @@ same path under another session by magit's parent chain."
           rsr/agent-sessions--row-status)
     (magit-insert-section (rsr/agent-session-file path t)
       (magit-insert-heading
-       (propertize
+       (rsr/agent-sessions--dress
         (concat indent (if unvisited "● " "  ")
-                (format "%-28s %s"
-                        (file-name-nondirectory (directory-file-name path))
-                        (or (plist-get file :label)
-                            (abbreviate-file-name path)))
+                (rsr/agent-sessions--icon 'file path)
+                (propertize (format "%-28s "
+                                    (file-name-nondirectory (directory-file-name path)))
+                            'font-lock-face 'rsr/agent-session-file-name)
+                (propertize (or (plist-get file :label)
+                                (abbreviate-file-name path))
+                            'font-lock-face 'rsr/agent-session-file-label)
                 (if missing "  (missing)" "")
                 "\n")
-        'font-lock-face (if unvisited
+        (if unvisited
                             'rsr/agent-session-file-unvisited
                           'rsr/agent-session-file)))
       (rsr/agent-sessions--insert-note
@@ -3413,9 +3661,10 @@ same path under another session by magit's parent chain."
     (magit-insert-section (rsr/agent-session-worktree
                            (list :label (plist-get wt :label)
                                  :path (plist-get wt :path)))
-      (magit-insert-heading (format "%s%s"
-                                    (if rsr/agent-sessions-group-by-folder "    " "  ")
-                                    (plist-get wt :label)))
+      (magit-insert-heading
+        (if rsr/agent-sessions-group-by-folder "    " "  ")
+        (rsr/agent-sessions--icon 'worktree)
+        (propertize (plist-get wt :label) 'font-lock-face 'magit-section-heading))
       (rsr/agent-sessions--insert-note
        (list (rsr/agent-sessions--worktree-note-key wt))
        (if rsr/agent-sessions-group-by-folder "      " "    "))
@@ -3426,7 +3675,8 @@ same path under another session by magit's parent chain."
                          (list :name (plist-get repo :name)
                                :root (plist-get repo :root)))
     (magit-insert-heading
-      (propertize (plist-get repo :name) 'face 'bold))
+      (rsr/agent-sessions--icon 'repo)
+      (propertize (plist-get repo :name) 'font-lock-face 'rsr/agent-session-repo))
     (rsr/agent-sessions--insert-note
      (list (rsr/agent-sessions--repo-note-key repo))
      "  ")
@@ -3463,10 +3713,12 @@ same path under another session by magit's parent chain."
                     (plist-get (car entries) :session))))
     (magit-insert-section (rsr/agent-session-folder id)
       (magit-insert-heading
-        (propertize (format "  %s (%d)"
+        "  "
+        (rsr/agent-sessions--icon 'folder)
+        (propertize (format "%s (%d)"
                             (or (plist-get folder :name) "No folder")
                             (length members))
-                    'face 'bold))
+                    'font-lock-face 'magit-section-heading))
       (rsr/agent-sessions--insert-entries
        (if rsr/agent-sessions-sort-by-activity
            members
@@ -3672,7 +3924,9 @@ Returns `ignore' for anything unrecognised, so the menu closes instead of
 re-prompting.  Built from project.el's own pieces (`project-prefix-map',
 `project-switch-commands', `project--menu-prompt') so a user's customisation
 of the dispatch menu still applies; the deprecated (KEY COMMAND LABEL) row
-format is normalised the same way `project--switch-project-command' does."
+format is normalised the same way `project--switch-project-command' does.
+Emacs 29 calls the prompt builder `project--keymap-prompt'; Emacs 30 renamed
+it, so whichever this Emacs has is used."
   (let* ((menu (mapcar (lambda (row) (if (characterp (car row)) (reverse row) row))
                        project-switch-commands))
          (map (let ((temp (make-sparse-keymap)))
@@ -3682,7 +3936,11 @@ format is normalised the same way `project--switch-project-command' does."
                              (keychar (nth 2 row)))
                     (define-key temp (vector keychar) cmd)))))
          (choice (let ((overriding-local-map map))
-                   (read-key-sequence (concat "Choose: " (project--menu-prompt)))))
+                   (read-key-sequence
+                    (concat "Choose: "
+                            (if (fboundp 'project--menu-prompt)
+                                (project--menu-prompt)
+                              (project--keymap-prompt))))))
          (command (lookup-key map choice)))
     (message nil)
     (if (and (commandp command)
@@ -6168,84 +6426,116 @@ stray worktree or branch behind."
                     (abbreviate-file-name dir) label brief
                     (if trust-note (concat "\nNote: " trust-note) "")))))))))
 
-;;;; Exploration children (called from skills/explore-session/scripts/open-window.sh)
+;;;; Launched sessions (called from bin/agent-launch)
 
-(defun rsr/agent-sessions-explore-spawn (parent-id session cwd name dir slug
-                                                   command env &optional detached)
-  "Open an exploration child window for the agent in terminal PARENT-ID.
-The explore-session skill's `open-window.sh' calls this over emacsclient when
-the parent runs in a terminal Emacs opened, so the child gets what only Emacs
-can give it: a tracked id in its environment (hooks, the session log, restore,
-`emacs-share'), a proxy row nested under the parent, and its brief as an
-attachment.  The script keeps every other decision — the child's command, its
-environment and the `@explore-*' window options — so that its plain-tmux
-fallback opens exactly the same child.
+(defun rsr/agent-sessions-launch-spawn (parent-id session cwd name attach title
+                                                  command env &optional detached
+                                                  attach-label)
+  "Open a session window for `agent-launch' and type COMMAND into it.
+The launcher (`bin/agent-launch', used by the workflow stage keys, review and
+bug-fix children, and explore-session) calls this over emacsclient so the new
+session gets what only Emacs can give it: a tracked id in its environment
+(hooks, the session log, restore, `emacs-share') and a dashboard row.  The
+script keeps every other decision — the command, its environment, the tmux
+window options — so that its plain-tmux fallback opens the same session.
 
-SESSION is the parent's tmux session, which the child must share (the skill's
-rule), so the repository-derived target is bypassed.  CWD is the child's
-working directory, NAME the tmux window name (also the proxy's name), DIR the
-exploration directory holding `brief.md', SLUG the exploration's slug, COMMAND
-the shell line that starts the child, and ENV its extra `VAR=VALUE' entries,
-one per line.  DETACHED non-nil leaves the parent's window selected.  Emacs's
-own window layout is never rearranged: the user is in a tmux client, not here.
-Returns a string for the caller to print, \"Opened WINDOW TERMINAL-ID\" on
-success; failures are returned as text because emacsclient's printed value is
-the script's only channel back."
-  (let* ((parent (rsr/agent-sessions--session-for-id parent-id))
+PARENT-ID, when non-empty, is the terminal id of the session this one is a
+child of: the row nests under it and the child learns it as
+`EMACS_AGENT_PARENT'.  SESSION, when non-empty, is the tmux session to open
+in (a child shares its parent's); otherwise the usual repository-derived
+target applies.  CWD is the working directory, NAME the window name, ATTACH a
+file to show under the new row (labelled ATTACH-LABEL, default \"brief\"),
+TITLE the row's title, COMMAND the shell line that starts the agent and ENV
+its extra `VAR=VALUE' entries, one per line.  DETACHED non-nil leaves the
+current tmux window selected.  Emacs's own window layout is never rearranged.
+Returns \"Opened WINDOW TERMINAL-ID\" on success; failures are returned as
+text because emacsclient's printed value is the script's only channel back."
+  (let* ((parent-id (and parent-id (not (string-empty-p parent-id)) parent-id))
+         (parent (and parent-id (rsr/agent-sessions--session-for-id parent-id)))
+         (session (and session (not (string-empty-p session)) session))
          (cwd (and cwd (not (string-empty-p cwd))
                    (file-name-as-directory (expand-file-name cwd))))
-         (brief (and dir (not (string-empty-p dir))
-                     (expand-file-name "brief.md" dir)))
-         (slug (string-trim (or slug "")))
-         (name (if (or (null name) (string-empty-p name))
-                   (concat "explore-" slug)
-                 name))
+         (attach (and attach (not (string-empty-p attach)) (expand-file-name attach)))
+         (title (and title (not (string-empty-p title)) title))
+         (name (if (or (null name) (string-empty-p name)) "session" name))
          (env (and env (split-string env "\n" t))))
     (cond
-     ((null parent)
+     ((and parent-id (null parent))
       (format "No Emacs terminal registered for session id %s" parent-id))
-     ((or (null session) (string-empty-p session))
-      "No tmux session named for the child")
      ((or (null cwd) (not (file-directory-p cwd)))
-      (format "No such directory for the child: %s" (or cwd "")))
-     ((or (null brief) (not (file-exists-p brief)))
-      (format "No brief at %s (write it first)" (or brief "")))
-     ((string-empty-p slug) "Refusing to open an exploration with no slug")
+      (format "No such directory for the session: %s" (or cwd "")))
+     ((and attach (not (file-exists-p attach)))
+      (format "No file to attach at %s" attach))
      ((string-empty-p (string-trim (or command "")))
-      "Refusing to open an exploration with an empty command")
+      "Refusing to open a session with an empty command")
      (t
       (let ((buf (save-window-excursion
                    (let ((rsr/agent-sessions-terminal 'tmux)
-                         (rsr/agent-tmux--target (cons session cwd))
+                         (rsr/agent-tmux--target (if session (cons session cwd)
+                                                   rsr/agent-tmux--target))
                          (rsr/agent-sessions--tmux-window-options
                           (list :name name :detached detached :silent t))
                          (rsr/agent-sessions--extra-terminal-env
                           (append env
-                                  (list (format "EMACS_AGENT_PARENT=%s" parent-id)))))
+                                  (and parent-id
+                                       (list (format "EMACS_AGENT_PARENT=%s" parent-id))))))
                      (condition-case err
                          (rsr/agent-sessions--create-terminal cwd name)
                        (error (error-message-string err)))))))
         (cond
          ((stringp buf) buf)
-         ((not (buffer-live-p buf)) "Could not create a terminal for the exploration")
+         ((not (buffer-live-p buf)) "Could not create a terminal for the session")
          (t
-          (let ((parent-sid (plist-get parent :agent-session-id))
+          (let ((parent-sid (and parent (plist-get parent :agent-session-id)))
                 (child-id (buffer-local-value 'rsr/agent-session-id buf)))
             (with-current-buffer buf
               (when parent-sid
                 (setq-local rsr/agent-session--branched-from
                             (cons parent-sid
                                   (rsr/agent-sessions--session-short-label parent))))
-              (setq-local rsr/agent-session-title-override
-                          (format "explore: %s" slug)))
-            ;; The brief is what the child was told; it belongs under the
-            ;; child, and reading it there clears it like any attachment.
-            (rsr/agent-sessions--share-file
-             (rsr/agent-sessions--session-for-id child-id) brief "exploration brief")
+              (when title
+                (setq-local rsr/agent-session-title-override title)))
+            ;; The brief is what the session was told; it belongs under its
+            ;; row, and reading it there clears it like any attachment.
+            (when attach
+              (rsr/agent-sessions--share-file
+               (rsr/agent-sessions--session-for-id child-id) attach
+               (or attach-label "brief")))
             (rsr/agent-sessions--terminal-send buf command)
             (rsr/agent-sessions--refresh-if-visible)
             (format "Opened %s %s"
                     (buffer-local-value 'rsr/agent-tmux-window buf) child-id)))))))))
+
+;;;; Exploration children (called from skills/explore-session/scripts/open-window.sh)
+
+(defun rsr/agent-sessions-explore-spawn (parent-id session cwd name dir slug
+                                                   command env &optional detached)
+  "Open an exploration child window for the agent in terminal PARENT-ID.
+Kept for callers of the original interface; `rsr/agent-sessions-launch-spawn'
+does the work.  SESSION is the parent's tmux session, which the child must
+share; DIR holds `brief.md', which is attached to the child's row; SLUG titles
+the row `explore: SLUG'; NAME defaults to `explore-SLUG'.  See
+`rsr/agent-sessions-launch-spawn' for the rest."
+  (let* ((brief (and dir (not (string-empty-p dir))
+                     (expand-file-name "brief.md" dir)))
+         (slug (string-trim (or slug "")))
+         (name (if (or (null name) (string-empty-p name))
+                   (concat "explore-" slug)
+                 name)))
+    (cond
+     ((null (rsr/agent-sessions--session-for-id parent-id))
+      (format "No Emacs terminal registered for session id %s" parent-id))
+     ((or (null session) (string-empty-p session))
+      "No tmux session named for the child")
+     ((or (null brief) (not (file-exists-p brief)))
+      (format "No brief at %s (write it first)" (or brief "")))
+     ((string-empty-p slug) "Refusing to open an exploration with no slug")
+     ((string-empty-p (string-trim (or command "")))
+      "Refusing to open an exploration with an empty command")
+     (t
+      (rsr/agent-sessions-launch-spawn
+       parent-id session cwd name brief (format "explore: %s" slug)
+       command env detached "exploration brief")))))
 
 (defun rsr/agent-orchestration--logged-recipient (value &optional by-agent-session)
   "Return the most recent resumable session matching VALUE.

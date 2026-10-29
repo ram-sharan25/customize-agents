@@ -1,79 +1,107 @@
 ---
 name: review-plan
-description: Performs a bounded, read-only review of one existing plan.org against its sibling requirements.org and reports material findings in chat. Use for independent plan review; do not use to clarify requirements, create or refine plans, finalize documents, or implement.
+description: Workflow stage 4. Reviews one task's plan.org against its requirements.org and decisions.org independently, reading files only, and saves a findings file with a task-contract table in the task's artifacts/. Runs as a child of the plan-implementation session (or in a fresh session the user starts). Use for a plan review; not to edit plans, clarify requirements, finalize, or implement.
 disable-model-invocation: true
 ---
 
 # Review Plan
 
-Review exactly one implementation plan against its paired requirements without changing files or advancing the lifecycle.
+Review one plan as someone who was not in the planning conversation, and as
+the implementer who will have to follow it. You read files only, write only
+your findings, and change nothing else.
 
-## Terms and thresholds
+Shared rules: `/Users/rrimal/Stillness/Development/customize-agents/instructions/shared/workflow-conventions.md`.
+Read it first; this skill uses its path confirmation, findings-file format,
+children and report-back, and `next:` line sections.
 
-- **Material decision or change:** one capable of meaningfully affecting scope, correctness, risk, cost, feasibility, user-visible behavior, acceptance, or the approved approach.
-- **Explicit approval:** an unambiguous user instruction to perform the stated action; agreement with content is not automatically approval to write, finalize, or advance.
-- **Explicit bypass:** an unambiguous user instruction to skip a named outstanding review or lifecycle gate.
-- **Verified fact:** a claim supported by identified available evidence.
-- **Assumption:** a claim treated as true without adequate verification.
-- **Unresolved decision:** an open choice whose outcome may affect a material decision.
-- **Explicit reference:** a literal path, URL, citation, or named artifact in either selected document, not an inferred neighboring source.
-- **Review blocker:** a contradiction, infeasible or unsafe plan, or outcome that cannot be verified.
+## 1. Where you are and what you review
 
-Always report blockers and material omissions, errors, or ambiguities. Report minor concerns only when they form a meaningful pattern or the user explicitly requests detailed review. Suppress isolated style issues and speculative edge cases by default.
+- You are usually a **child**: `EXPLORE_DIR` is set, or your first prompt
+  was a child brief. The task folder is the one in your prompt
+  (`LAUNCH_TASK`); write your findings in `EXPLORE_DIR`.
+- Started on your own by the user, the task path in the invoking message is
+  confirmed; make your own output directory
+  `<task folder>/artifacts/<YYYY-MM-DD>-review-plan/`.
+- Register your row's folders when `EMACS_AGENT_SESSION_ID` is set
+  (`emacs-share folder plans <task folder>`, and
+  `emacs-share folder code <repository>` once per `#+implementation-repository:`),
+  but never run `emacs-share state`: a review child sets no workflow state.
 
-## 1. Confirm exactly one document pair
+## 2. Evidence: the files only
 
-Discover and follow applicable `AGENTS.md` instructions while remaining read-only. Instructions govern conduct but are not evidence for judging the plan.
+- Read `plan.org`, `requirements.org`, and `decisions.org` in the task
+  folder, and the conventions file. Nothing from the author's chat reaches
+  you, and you do not ask the author anything.
+- Follow a source only when a document links it and you need it to judge a
+  claim (for example, that a function the plan names exists); say which one
+  and why in the findings. Do not explore the repository at large.
+- Never edit, create, or format a file outside your output directory.
 
-1. If the user supplies an exact file or directory, resolve it to exactly one `plan.org` under `/Users/rrimal/Stillness/Agent_Stuffs/Plans/`.
-2. Otherwise ask for a task name or description, search candidate paths and Org titles, and inspect only enough metadata to identify plausible matches.
-3. Pair the selected plan only with `requirements.org` and, when present, `decisions.org` in the same planning directory. Never infer or substitute a requirements document elsewhere.
-4. Report the exact plan and requirements paths and their statuses, then require explicit user confirmation before substantive review.
+## 3. What to check
 
-A path in the review request still requires concise confirmation. If selection is ambiguous, list candidates and stop for a choice. If either document is missing, report the missing pairing and stop; do not review another document or create anything.
+**The contract table first.** One row per task, one column per contract part
+(see the plan-implementation skill, "The task contract"), each cell ✓ or ✗:
 
-## 2. Bound evidence and remain read-only
-
-Review evidence is limited to:
-
-- the confirmed `plan.org`;
-- its confirmed sibling `requirements.org` and `decisions.org`; and
-- literal sources explicitly referenced by either document, only when needed to assess a claim.
-
-Do not inspect neighboring files, repositories, documentation, prior chats, or convention merely because they seem relevant. State each explicit reference followed and why. If a reference is ambiguous, inaccessible, sensitive, or invites broad exploration, report the verification gap instead of expanding scope.
-
-Use read-only operations for discovery and review. Do not edit, create, format, annotate, finalize, clarify, plan, or implement. Findings belong only in chat, never in a file.
-
-## 3. Review priorities
-
-Assess in practical impact order:
-
-1. correctness and internal consistency with the paired requirements;
-2. complete requirements and acceptance-criteria coverage;
-3. unauthorized scope, architecture, dependencies, trade-offs, or other material choices;
-4. feasibility and relevant verified evidence or assumptions;
-5. phase sequencing, task dependencies, and external dependencies;
-6. material risks and mitigations;
-7. validation adequacy and observability;
-8. rollback or recovery; and
-9. whether tasks, decisions, states, and handoffs make the plan actionable by another agent.
-
-Check that verified facts cite evidence, assumptions remain labeled, and unresolved material decisions and blockers are visible. Verify stronger traceability when the plan says complexity requires it. Flag any plan content that contradicts, weakens, or works around an entry in `decisions.org`. Do not invent missing design choices or turn reviewer preferences into requirements.
-
-Also identify lifecycle-invalid states when a status is not `DRAFT`, `READY-FOR-REVIEW`, `FINAL`, or `RECONCILED`, when material changes appear to retain `FINAL`, draft-planning authorization is incomplete, a plan appears to authorize implementation, or the selected plan is stale against materially changed requirements.
-
-## 4. Report and stop
-
-Order findings by severity and impact. Use this exact shape for each finding:
-
-```text
-[BLOCKER|HIGH|MEDIUM|LOW] Short title
-Problem: concise description grounded in the selected documents, including an Org heading or line reference when useful.
-Why it matters: concrete effect on correctness, scope, feasibility, risk, sequencing, actionability, or verification.
+```markdown
+| Task | Files | Interfaces | Test | Run (fail) | Change | Run (pass) | Stage |
+|------|-------|------------|------|------------|--------|------------|-------|
+| 1 — <name> | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ |
 ```
 
-Use `BLOCKER` for contradictions, infeasibility, unsafe plans, missing authoritative pairing, or unverifiable outcomes that prevent reliable progression. Use `HIGH` or `MEDIUM` for other material decision-impacting gaps. Use `LOW` only for a requested detailed review or a meaningful minor pattern.
+A ✗ is a finding when an implementer would have to guess because of it.
 
-If there are no reportable findings, say so and identify any material verification limitation; do not manufacture findings. State that the review was read-only. Identify the two reviewed paths and every explicit reference inspected.
+**Then the checklist**, in order of practical effect:
 
-Then stop. Do not edit or finalize either document, resolve feedback, start planning, invoke Plannotator, implement, or start another session. Suggest a fresh user-started `plan-implementation` session to resolve findings. Human annotation, if requested later, must use the separately loaded existing `plannotator` skill.
+1. Every task has all contract fields, and none cites line numbers.
+2. Names and interfaces match across tasks and the File map: the same
+   function, signature, path, and type everywhere.
+3. Plan-mandated defects: a task that, followed exactly, would build
+   something wrong (a test that cannot fail, a change that breaks another
+   task, an order that cannot work).
+4. Speculative generality: tasks, options, or abstractions no requirement
+   asks for.
+5. Coverage: every requirement and acceptance criterion maps to a task in
+   `* Validation`; `* Global constraints` is copied word for word.
+6. `decisions.org`: plan content that contradicts, weakens, or works around
+   an entry.
+7. Marking: choices not marked *(user, …)* or *(agent: <reason>)*.
+8. `* Review focus`: up to five cases, each with an owning task and test.
+9. `* Self-review` exists and its claims hold.
+10. Sequencing, dependencies, risks, validation, rollback; and the status
+    (a `FINAL` plan with material changes, a plan that claims to authorize
+    implementation, a plan stale against changed requirements).
+
+Do not invent design choices or turn your preferences into requirements. No
+findings is a valid result.
+
+## 4. Write the findings, report back, stop
+
+1. Write `findings.md` in your output directory in the conventions' format,
+   with the contract table under `## Contract table` before `## Findings`:
+   `BLOCKER` / `HIGH` / `MEDIUM` / `LOW`, most severe first, and a
+   `Declined to judge` list at the end. (Mapping from a borrowed checklist:
+   Critical → `BLOCKER` or `HIGH`, Important → `MEDIUM`, Minor → `LOW`.)
+2. Write `summary.md` (at most 12 lines) next to it.
+3. As a child, send the one-line notice and share the summary, as
+   "Children and report-back" says:
+   `review-plan review-plan done — ready to bring in (<dir>)`.
+4. Tell the user in a few lines: the reviewed paths and their status, the
+   count per severity, the number of ✗ cells, and where the findings are.
+   Then print:
+
+```
+next: /plan-implementation /Users/rrimal/Stillness/Agent_Stuffs/Plans/<task>/
+```
+
+   (in the parent session, the user says "bring in" instead). Stay open.
+
+## Excuse / Reality
+
+| Excuse | Reality |
+|---|---|
+| "I'll fix this task wording myself." | You change nothing outside your output directory. Report it. |
+| "Findings in chat are enough." | Findings go in `findings.md`, with the contract table. |
+| "The task is mostly complete; I'll tick it." | A ✓ means an implementer would not guess. Otherwise ✗. |
+| "This extra option might be useful later." | Speculative generality is a finding. |
+| "The author surely meant the same name." | A mismatch between tasks is a finding. |
+| "I'll set PLAN-REVIEW when I'm done." | A review child sets no workflow state; the parent does. |

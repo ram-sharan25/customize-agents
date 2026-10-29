@@ -1,0 +1,81 @@
+#+title: Plan — Shouted greeting
+#+status: FINAL
+#+startup: overview
+#+todo: TODO NEXT BLOCKED | DONE DEFERRED
+#+planning-directory: @TASK@/
+#+requirements: @TASK@/requirements.org
+#+implementation-repository: @REPO@
+#+baseline: @BASELINE@
+#+decisions: @TASK@/decisions.org
+
+* Global constraints
+
+- No new dependencies.
+- POSIX =sh= only.
+
+* Objective
+
+Add =--shout= to =greet=.
+
+* Current state
+
+=greet.sh= defines =greet NAME=; =test.sh= is the full suite.
+
+* Proposed approach
+
+Handle a leading =--shout= in =greet= and pipe the greeting through =tr= *(user: "Shouting is a flag, not a new function")*.
+
+* Review focus
+
+1. =greet --shout= with no name prints =HELLO, != rather than failing (Task 1).
+
+* File map
+
+- =greet.sh=: the =greet= function.
+- =test.sh=: the full suite.
+
+* Phases and tasks
+
+** TODO Phase 1 — Shout
+
+*** TODO Task 1 — =--shout= flag
+- Files: =greet.sh= (function =greet=), =test.sh=.
+- Test: add =check "$(greet --shout Ada)" "HELLO, ADA!"= to =test.sh=.
+- Run (fail): =sh test.sh= prints =FAIL: expected 'HELLO, ADA!'=.
+- Change: when =$1= is =--shout=, shift and print the greeting through =tr '[:lower:]' '[:upper:]'=.
+- Run (pass): =sh test.sh= prints =all tests passed=.
+- Stage: =git add greet.sh test.sh=; proposed message =feat: greet --shout=.
+
+* Self-review
+
+- Coverage: the one requirement maps to Task 1.
+
+* Dependencies
+
+None.
+
+* Risks and mitigations
+
+| Risk | Impact | Mitigation |
+|------+--------+------------|
+| =tr= classes differ by locale | Wrong case | POSIX classes |
+
+* Validation
+
+- [ ] Acceptance criterion → Task 1.
+
+* Rollback or recovery
+
+=git restore= the two files.
+
+* Open decisions
+
+None.
+
+* Implementation decisions
+
+None.
+
+* Progress notes
+
+None.

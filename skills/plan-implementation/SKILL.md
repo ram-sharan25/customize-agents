@@ -1,118 +1,164 @@
 ---
 name: plan-implementation
-description: Collaboratively creates or refines one implementation plan.org from one confirmed requirements.org, governing planning decisions, synchronization, review handoff, and explicit finalization. Use for implementation planning; do not use to clarify requirements, independently review a plan, or implement it.
+description: Workflow stage 3. Writes one task's plan.org from its requirements.org with the user, task by task in the test-first contract, then self-reviews and hands it to plan review; also resolves plan-review findings and finalizes on the user's word. Use for implementation planning; not to clarify requirements, review a plan, or implement.
 disable-model-invocation: true
 ---
 
 # Plan Implementation
 
-Develop one actionable `plan.org` with the user. Planning never authorizes implementation and this skill never implements, performs a plan review, invokes Plannotator, or starts another lifecycle stage.
+Write one `plan.org` that an implementer can follow without making a naming,
+file, or test choice, and that a reviewer can check line by line. Planning
+never implements and never starts another stage.
 
-## Terms
+Shared rules: `/Users/rrimal/Stillness/Development/customize-agents/instructions/shared/workflow-conventions.md`.
+Read it first; it covers path confirmation, the self-sufficient documents,
+dashboard registration, children and report-back, findings files, user/agent
+marking, statuses and gates, the `next:` line, and never closing the session.
 
-- **Material decision or change:** one capable of meaningfully affecting scope, correctness, risk, cost, feasibility, user-visible behavior, acceptance, or the approved approach.
-- **Explicit approval:** an unambiguous user instruction to perform the stated action; agreement with content is not automatically approval to write, finalize, or advance.
-- **Explicit bypass:** an unambiguous user instruction to skip a named outstanding review or lifecycle gate.
-- **Verified fact:** a claim supported by identified available evidence.
-- **Assumption:** a claim treated as true without adequate verification.
-- **Unresolved decision:** an open choice whose outcome may affect a material decision.
-- **Explicit reference:** a literal path, URL, citation, or named artifact in a planning document, not an inferred neighboring source.
-- **Review blocker:** a contradiction, infeasible or unsafe plan, or outcome that cannot be verified.
+## 1. Start
 
-## 1. Confirm the planning pair
+1. Resolve the task folder (a path in the invoking message is confirmed).
+   It must hold `requirements.org`; if not, stop and print
+   `next: /clarify-requirements <task folder>`.
+2. Requirements must be `FINAL`, unless the user explicitly says to plan from
+   the draft. Record that permission in `plan.org` under
+   `* Planning authorization`: the requirements path and status, date and
+   time with timezone, the user's words, and any limits. It does not finalize
+   anything and does not authorize implementation.
+3. Do the start-of-stage steps from the conventions and register:
 
-Before reading or writing planning files, discover and follow all applicable `AGENTS.md` instructions. Defer workspace structure to those files.
+```sh
+emacs-share state PLANNING
+emacs-share folder plans <task folder>
+emacs-share folder code <repository>     # once per #+implementation-repository:
+emacs-share link linear|pr <url>         # only when #+issue: is set
+```
 
-Resolve exactly one planning directory under `/Users/rrimal/Stillness/Agent_Stuffs/Plans/` and exactly one `requirements.org` in it:
+4. Start `plan.org` from `/Users/rrimal/Stillness/Agent_Stuffs/Plans/templates/plan.org`
+   when it does not exist; never overwrite one that does. Copy the
+   repository and baseline lines from `requirements.org`, one
+   `#+implementation-repository:` / `#+baseline:` pair per repository.
+5. Read source code and other material only when the requirements point to
+   it or the user allows it in this session; record that permission and what
+   you read in `* Current state`.
 
-1. If the user supplies an exact file or directory, resolve it to one planning directory and its `requirements.org`.
-2. Otherwise ask for a task name or description, search path names and Org titles, and inspect only enough candidate metadata to disambiguate.
-3. Report the exact planning directory, requirements path, requirements status, expected sibling `plan.org`, and any repository path already recorded there.
-4. For one match, require explicit user confirmation before substantive planning. For multiple candidates, list them and require a choice. Do not choose silently. If requirements are absent, stop and suggest a fresh `clarify-requirements` session.
+## 2. Plan one decision at a time
 
-A path included in the planning request still requires concise confirmation. Resolve one pair only; do not combine requirements documents.
+For each open choice that affects scope, architecture, dependencies, or risk:
+ask one short question, let the user answer, offer options only when asked,
+restate, and get confirmation. A confirmed choice goes to `decisions.org`
+with `Why:`; the plan links to it. If planning shows the requirements must
+change, stop and print `next: /clarify-requirements <task folder>`; planning
+does not edit requirements.
 
-## 2. Enforce requirements status
+## 3. What plan.org contains
 
-Require `#+status: FINAL` by default. If requirements are `DRAFT` or `READY-FOR-REVIEW`, stop unless the user explicitly authorizes planning from those draft requirements. That authorization is distinct from finalizing requirements, finalizing the plan, bypassing reviews, or authorizing implementation.
+In this order (the template has every section):
 
-After explicit draft-planning authorization, initialize or update the sibling `plan.org` and durably record:
+- **`* Global constraints`** — the rules that bind every task, copied word
+  for word from `requirements.org` (Constraints, Operational and quality
+  requirements).
+- `* Objective`, `* Current state` (verified facts with their evidence,
+  separate from assumptions).
+- **`* Proposed approach`** — every choice marked *(user, "<decisions.org
+  title>")* or *(agent: <reason>)*.
+- **`* Review focus`** — up to five cases a real user would hit that no test
+  checks yet, most likely first. Each names the task whose test will pin it;
+  the implementation reviewer checks each one on purpose.
+- **`* File map`** — every file to create or change, one line each on what it
+  is for. Not why the code is organized that way.
+- **`* Phases and tasks`** — `** Phase N — <name>` headings, each holding
+  `*** TODO Task N — <name>` headings, numbered across the plan.
+- **`* Self-review`**, `* Dependencies`, `* Risks and mitigations`,
+  `* Validation` (each acceptance criterion and the task that proves it),
+  `* Rollback or recovery`, `* Open decisions`, `* Implementation decisions`
+  (`None` until implementation), `* Progress notes`.
 
-- the exact `requirements.org` path;
-- the authorization date and time, including timezone;
-- all stated conditions or limits; and
-- the statement that authorization neither finalizes requirements nor authorizes implementation.
+## 4. The task contract
 
-A chat-only record is insufficient. Keep the plan `DRAFT` while requirements are `DRAFT` unless the user later separately and explicitly finalizes the plan against those draft requirements after completing or explicitly bypassing its reviews.
+Every task has these parts, so the implementer writes exactly one reasonable
+thing at each step:
 
-## 3. Initialize or preserve the plan
+- **Files**: exact paths to create, change, and test, with the function or
+  section to change. Never line numbers; they move.
+- **Interfaces**: what the task uses from earlier tasks and what later tasks
+  rely on, with exact names and signatures (parameters and return types).
+- **Test**: the failing test, written out: its name and its assertions with
+  the requirements' exact values. For skill or instruction text, a
+  structural check that reads the file and asserts what the task requires.
+- **Run (fail)**: the command, and the failure expected (which message, and
+  why it fails).
+- **Change**: the minimal change, by signature and file; a code block only
+  for an algorithm the signature and the test do not determine.
+- **Run (pass)**: the command and the expected pass, then the full suite.
+- **Stage**: the `git add` line and a proposed commit message. The user
+  commits; a task never does.
 
-Use `/Users/rrimal/Stillness/Agent_Stuffs/Plans/templates/plan.org` and applicable workspace instructions for a new plan. If the package has no `decisions.org`, create it from the template. Refuse silent overwrite. If `plan.org` exists, preserve useful content and propose material restructuring before applying it.
+Fold setup and documentation into the task whose deliverable needs them.
+Split tasks only where a reviewer could reject one and approve its neighbour.
 
-The plan must retain valid Org structure and identify durably:
+Implementers read one task at a time with the extraction helper:
+`~/.claude/skills/plan-implementation/scripts/extract-task <plan.org> <N>`.
+Write each task so it stands on its own when read that way.
 
-- `#+status:` (`DRAFT`, `READY-FOR-REVIEW`, `FINAL`, or `RECONCILED`);
-- its absolute planning-task directory;
-- the exact sibling requirements and decisions paths;
-- the absolute implementation repository path when applicable, otherwise an explicit `N/A`; and
-- the issue and baseline SHA when applicable.
+## 5. Self-review, then hand to review
 
-Do not infer a repository merely from nearby directories. Obtain confirmation for a material path choice.
+Before `READY-FOR-REVIEW`, check and fix, then record under `* Self-review`
+what you checked and what you changed:
 
-## 4. Plan one material decision at a time
+- **Requirements coverage**: every requirement and acceptance criterion maps
+  to a task in `* Validation`.
+- **Vague lines**: "handle errors", "update as needed", "similar to Task 3" —
+  replace with the exact thing.
+- **Name and type consistency**: every name, signature, and path is spelled
+  the same in every task and in the File map.
+- **Review focus** cases each have an owning task with a test.
+- **Proportion**: the number and size of tasks fit the scope.
 
-Maintain a concise ledger distinguishing settled decisions, verified facts with evidence, assumptions, risks, dependencies, and unresolved decisions.
+Then, with the user's okay, set `plan.org` to `READY-FOR-REVIEW` and open the
+plan review as a child (see "Children and report-back"); set
+`emacs-share state REVIEW`:
 
-For each highest-impact unresolved material implementation choice:
+```sh
+agent-launch --child --skill review-plan --task <task folder> \
+  --slug review-plan --dir <task folder>/artifacts/<YYYY-MM-DD>-review-plan \
+  --brief <that dir>/brief.md --no-focus
+```
 
-1. Ask one concise, neutral, first-principles question.
-2. Let the user answer before presenting options.
-3. Give a small option set, trade-offs, or a recommendation only if requested; label uncertainty.
-4. Restate the proposed settled decision and obtain confirmation before recording it in `decisions.org`. The plan may link to that entry but must not become a second authority.
+If the user would rather start the review themselves, set
+`emacs-share state PLAN-REVIEW` and print its `next:` line.
 
-Never silently choose scope, architecture, dependencies, or risk trade-offs during normal planning. Stop probing when an issue is non-material, reversible, speculative, or better deferred, but record any unresolved material choice and its blocking effect.
+On the child's notice, follow "When a review child's notice arrives". On
+"bring in", go through the findings with the user one at a time, apply only
+approved changes, record user choices in `decisions.org` (others under its
+`* Review record`), and link the findings file under `* Progress notes` with
+whether it is resolved. A material change returns the plan to `DRAFT`.
 
-Inspect repositories, source, or external material only when `requirements.org` explicitly requires it or the user authorizes it during this planning chat. Record planning-chat authorization and resulting evidence in `plan.org` or a literally referenced artifact, including enough source identification for a fresh review session. Do not broaden an explicit reference by inference.
+## 6. Finalize, then stop
 
-If planning reveals a proposed scope or other requirements change, stop planning and suggest a fresh `clarify-requirements` session. Do not edit the requirement as a planning choice.
+Only an explicit "finalize" from the user sets `#+status: FINAL`; name any
+review still outstanding and require it or an explicit bypass that names it.
+A material change to the requirements returns both documents to `DRAFT`.
+Plan finalization is not permission to implement.
 
-## 5. Keep an actionable synchronized plan
+End with `emacs-share state PLAN-REVIEW`, a few lines on the documents, their
+status, and what is open, then:
 
-Keep heading-level alignment with `requirements.org` by default. Add a requirements-to-task matrix when complexity or ambiguity prevents reliable coverage verification, and record why stronger traceability is needed.
+```
+next: /implement-plan /Users/rrimal/Stillness/Agent_Stuffs/Plans/<task>/
+```
 
-The plan must include:
+Stay open; the user closes the session.
 
-- objective aligned to requirements;
-- relevant current state, separating verified facts/evidence from assumptions;
-- selected approach and rationale;
-- phased, actionable tasks with progress states;
-- explicit task and external dependencies;
-- risks and mitigations;
-- validation mapped to requirements and acceptance criteria;
-- rollback or recovery;
-- open decisions;
-- implementation decisions (`None` until implementation); and
-- progress notes.
+## Excuse / Reality
 
-Keep tasks specific enough for another agent to execute, with ordering and expected verification. Keep the plan synchronized rather than preserving stale conclusions.
-
-Synchronization rules:
-
-- Any material requirements change sets both `requirements.org` and `plan.org` to `DRAFT`. Requirements then complete applicable review and explicit finalization before the synchronized plan does by default.
-- The user retains a separate explicit exception to finalize a plan against `DRAFT` requirements; record that approval and do not alter requirements status.
-- Any material change to a `FINAL` plan sets the plan to `DRAFT` until applicable plan reviews and explicit finalization recur.
-- Non-material execution records—task state, validation result, and progress-note updates that do not alter requirements or the approved approach—may retain `FINAL`.
-- Never treat authorization to plan, review bypass, finalization, and implementation permission as interchangeable.
-
-## 6. Reviews, finalization, and stop boundary
-
-The default plan sequence is:
-
-1. fresh user-started agent review with `review-plan`;
-2. separate user-directed human annotation with the installed `plannotator` skill;
-3. return in a fresh `plan-implementation` session to resolve feedback; and
-4. explicit user finalization.
-
-Track outstanding reviews. Honor an explicit bypass of either named review or both; a general instruction to continue is not a bypass. If finalization is requested with reviews outstanding, require their completion or explicit bypass. With the user's approval, set `READY-FOR-REVIEW` when handing the plan to review. Only an unambiguous user finalization request may change `#+status:` from `DRAFT` or `READY-FOR-REVIEW` to `FINAL`. Plan finalization is not implementation authorization.
-
-End by reporting concisely the plan and requirements paths and statuses, repository path or `N/A`, unresolved items, and next suggested stage. Then stop. Never launch review, invoke annotation, implement, manage another stage, or imply that the current planning session can cross into implementation. Implementation requires a fresh user-started session, a separate explicit request, and artifact confirmation under global instructions.
+| Excuse | Reality |
+|---|---|
+| "The implementer can pick the names." | Names, files, signatures, and tests are the plan's job. |
+| "Line 120 is where it goes." | Name the function or section; line numbers move. |
+| "The constraints are in requirements.org already." | Copy them word for word into `* Global constraints`; tasks are read alone. |
+| "Self-review is obvious; skip it." | Record what you checked and fixed. Reviewers start from it. |
+| "I'll review my own plan in this session." | The review is a child that reads files only. |
+| "The plan is good, I'll mark it FINAL." | Only the user's explicit word finalizes. |
+| "Each task ends with a commit." | Each task ends staged, with a proposed message. The user commits. |
+| "The plan is final, I'll start implementing." | Print the `next:` line and stop. |

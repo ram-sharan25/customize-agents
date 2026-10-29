@@ -8,11 +8,15 @@ Everything that customizes my coding agents (Claude Code, Pi, Codex), in one pla
 |-------------------------+-------------------------------------------------------------------|
 | =skills/=               | Agent skills; =install.sh= links each one into every harness.    |
 | =skills/explore-session/= | Spin a tangent off into a child session in a new tmux window (brief by default, fork on request) and bring a short summary back; shared scripts, plus =extensions/pi/explore-session.ts= for Pi. |
-| =emacs/agent-sessions/= | Emacs dashboard for agent sessions, its hook scripts and =bin/= commands. |
+| =skills/{clarify-requirements,review-requirements,plan-implementation,review-plan,implement-plan,review-implementation}/= | The planning workflow's stages, one skill each, in that order; =fix-bug/= is its bug-fix child, =issue-workflow/= runs the stages in one session. |
+| =emacs/agent-sessions/= | Emacs dashboard for agent sessions, its hook scripts and =bin/= commands (=emacs-share=, =emacs-agent=, and =agent-launch=, the core launcher every workflow session and child goes through). |
+| =emacs/agent-sessions/agent-workflow.el= | The workflow's Emacs keys: =C-c i w= (bound in =~/.emacs.d=), dashboard =c=, =y=, =o=. |
 | =emacs/test-bed/=       | Isolated Emacs for trying agent-sessions (=--init-directory=).   |
 | =extensions/pi/=        | Pi extensions.                                                     |
 | =hooks/=                | Harness hook scripts.                                              |
 | =instructions/<agent>/= | Global instructions per agent (Pi =AGENTS.md=, Claude =CLAUDE.md=). |
+| =instructions/shared/workflow-conventions.md= | Rules every workflow stage skill shares; =core.md= only points to the workflow. |
+| =tests/= | =tests/run.sh= runs the full suite: structural checks on skill text (=tests/skills/=), shell tests (=tests/shell/=), and the ERT tests.  =tests/e2e/run-stage.sh= runs one stage headless on a fixture task (slow; not in the suite). |
 | =settings/<agent>/=     | Agent settings (=settings.json=; Claude's =statusline.sh=).        |
 | =commands/<agent>/=     | Slash commands (Claude).                                            |
 | =prompts/<agent>/=      | Prompt templates.                                                   |
