@@ -120,7 +120,7 @@ End the stage with `emacs-share state PLAN-REVIEW` (waiting on the user), a
 few lines on the documents, their status, and what is open, then:
 
 ```
-next: /plan-implementation /Users/rrimal/Stillness/Agent_Stuffs/Plans/<task>/
+next: /plan-implementation <task folder>/
 ```
 
 (or `next: /review-requirements <task folder>` while a review is still to

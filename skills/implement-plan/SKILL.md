@@ -137,7 +137,7 @@ agent-launch --child --skill review-implementation --task <task folder> \
    `emacs-share state IMPL-REVIEW` and print its `next:` line:
 
 ```
-next: /review-implementation /Users/rrimal/Stillness/Agent_Stuffs/Plans/<task>/
+next: /review-implementation <task folder>/
 ```
 
 2. On the child's notice, follow "When a review child's notice arrives"

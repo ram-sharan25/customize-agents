@@ -65,7 +65,7 @@ When the user says "report back" (or right away when the brief said to):
    the command for the session that continues the work, e.g.:
 
 ```
-next: /implement-plan /Users/rrimal/Stillness/Agent_Stuffs/Plans/<task>/
+next: /implement-plan <task folder>/
 ```
 
 Stay open; the user closes the session.

@@ -6,5 +6,5 @@ check() {
   require_text "$f" "Declined to judge"
   require_regex "$f" '\[(BLOCKER|HIGH|MEDIUM|LOW)\]|no findings'
   [[ "$(md5 -q "$TASK/requirements.org")" == "$(cat "$tmp/req.md5")" ]] || fail "requirements.org was edited"
-  grep -qE 'next: /clarify-requirements' "$tmp/output.txt" || fail "no next: line in output"
+  require_next 'clarify-requirements'
 }

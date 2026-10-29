@@ -145,7 +145,7 @@ End with `emacs-share state PLAN-REVIEW`, a few lines on the documents, their
 status, and what is open, then:
 
 ```
-next: /implement-plan /Users/rrimal/Stillness/Agent_Stuffs/Plans/<task>/
+next: /implement-plan <task folder>/
 ```
 
 Stay open; the user closes the session.

@@ -17,6 +17,7 @@ require_text "$f" "emacs-share link linear"
 require_text "$f" "emacs-share link pr"
 require_text "$f" "#+pr:"
 require_regex "$f" "^[^a-z]*next: /"
+forbid_regex "$f" 'next: /[a-z-]+ /Users/[^ ]*/Plans/<'
 require_regex "$f" '\| *Excuse *\| *Reality *\|'
 # No copy of a stage's rules or of the templates.
 for old in "Write the review package" "Review and revise the plan" "Optional: independently verify the plan" \

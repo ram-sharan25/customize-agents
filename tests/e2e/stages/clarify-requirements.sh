@@ -8,5 +8,5 @@ check() {
   require_regex "$TASK/requirements.org" '^#\+status: (DRAFT|READY-FOR-REVIEW)'
   require_text "$TASK/requirements.org" "#+implementation-repository:"
   require_text "$TASK/requirements.org" "agent's guess"
-  grep -qE 'next: /(review-requirements|plan-implementation)' "$tmp/output.txt" || fail "no next: line in output"
+  require_next 'review-requirements|plan-implementation'
 }

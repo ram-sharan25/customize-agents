@@ -43,6 +43,9 @@ require_stage_common() {
   require_text "$1" "instructions/shared/workflow-conventions.md"
   require_regex "$1" '\| *Excuse *\| *Reality *\|'
   require_regex "$1" '^[^a-z]*next: /'
+  # The next: path is the task folder as given, never rebuilt from the Plans root.
+  require_regex "$1" '^[^a-z]*next: /[a-z-]+ <task folder>/'
+  forbid_regex "$1" 'next: /[a-z-]+ /Users/[^ ]*/Plans/<'
   require_text "$1" "emacs-share state"
   require_text "$1" "emacs-share folder plans"
   require_text "$1" "emacs-share folder code"

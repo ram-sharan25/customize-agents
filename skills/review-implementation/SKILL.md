@@ -94,7 +94,7 @@ children and report-back, and `next:` line sections.
    met, and where the findings are. Then print:
 
 ```
-next: /implement-plan /Users/rrimal/Stillness/Agent_Stuffs/Plans/<task>/
+next: /implement-plan <task folder>/
 ```
 
    (in the parent session, the user says "bring in" instead). Stay open.

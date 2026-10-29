@@ -8,5 +8,5 @@ check() {
   require_text "$TASK/plan.org" "staged, not committed"
   require_regex "$TASK/plan.org" "Fails first"
   require_regex "$TASK/plan.org" "Proposed commit message"
-  grep -qE 'next: ' "$tmp/output.txt" || fail "no next: line in output"
+  require_next 'review-implementation'
 }

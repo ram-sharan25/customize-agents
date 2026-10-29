@@ -7,5 +7,5 @@ check() {
   require_regex "$f" '\| *Task'
   require_text "$f" "Declined to judge"
   [[ "$(md5 -q "$TASK/plan.org")" == "$(cat "$tmp/plan.md5")" ]] || fail "plan.org was edited"
-  grep -qE 'next: /plan-implementation' "$tmp/output.txt" || fail "no next: line in output"
+  require_next 'plan-implementation'
 }

@@ -90,7 +90,7 @@ findings is a valid result.
    Then print:
 
 ```
-next: /plan-implementation /Users/rrimal/Stillness/Agent_Stuffs/Plans/<task>/
+next: /plan-implementation <task folder>/
 ```
 
    (in the parent session, the user says "bring in" instead). Stay open.

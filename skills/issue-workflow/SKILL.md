@@ -101,7 +101,7 @@ proposed commit messages listed, and the dashboard at `IMPL-REVIEW`. Print the
 last stage's `next:` line, e.g.:
 
 ```
-next: /review-implementation /Users/rrimal/Stillness/Agent_Stuffs/Plans/<project>/<task>/
+next: /review-implementation <task folder>/
 ```
 
 and stay open. Committing, pushing, and opening the PR are the user's.

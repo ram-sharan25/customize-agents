@@ -75,7 +75,7 @@ No findings is a valid result.
    count per severity, and where the findings are. Then print:
 
 ```
-next: /clarify-requirements /Users/rrimal/Stillness/Agent_Stuffs/Plans/<task>/
+next: /clarify-requirements <task folder>/
 ```
 
    (in the parent session, the user says "bring in" instead). Stay open.

@@ -52,6 +52,15 @@ keep=${3:-}
 setup() { :; }
 brief() { :; }
 check() { :; }
+# require_next SKILLS — the output has `next: /<skill> $TASK/` for one of the
+# |-separated SKILLS, with the exact task path this run was given.
+require_next() {
+  local path re
+  path=$(printf '%s' "$TASK" | sed 's/[][\.*^$+?(){}|]/\\&/g')
+  re="next: /($1) $path/?([\`[:space:]]|$)"
+  grep -qE -- "$re" "$tmp/output.txt" \
+    || fail "no next: /($1) line with the task path $TASK/"
+}
 source "$assertions"
 
 make_copy

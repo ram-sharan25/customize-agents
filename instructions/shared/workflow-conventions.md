@@ -220,8 +220,13 @@ Every stage ends by printing, as its last line, the exact command for the next
 stage, ready to paste, e.g.:
 
 ```
-next: /review-plan /Users/rrimal/Stillness/Agent_Stuffs/Plans/<task>/
+next: /review-plan <task folder>/
 ```
+
+`<task folder>` is the absolute path of the task folder this stage worked on,
+exactly as given or confirmed at invocation; never rebuild it from the Plans
+root or the task's name, since a task may live in a project subfolder or
+outside `Plans/`.
 
 Before it, in a few lines: the documents and their `#+status:`, what is still
 open, and what the user decides next. When the next step is the user's (a

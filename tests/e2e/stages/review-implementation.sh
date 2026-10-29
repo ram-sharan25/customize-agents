@@ -25,4 +25,5 @@ check() {
   require_regex "$f" "Shouting is a flag"
   require_regex "$f" "\b(met|not met)\b"
   [[ -n "$(git -C "$REPO" diff --cached --name-only)" ]] || fail "the review changed the staged work"
+  require_next 'implement-plan'
 }

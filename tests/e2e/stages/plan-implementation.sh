@@ -8,5 +8,5 @@ check() {
   done
   require_text "$p" "(agent:"
   require_regex "$p" '^#\+status: (DRAFT|READY-FOR-REVIEW)'
-  grep -qE 'next: /(review-plan|implement-plan)' "$tmp/output.txt" || fail "no next: line in output"
+  require_next 'review-plan|implement-plan'
 }
