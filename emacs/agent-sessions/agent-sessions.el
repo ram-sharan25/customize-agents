@@ -3465,8 +3465,71 @@ Point may be on the link row or inside its note."
                             (equal (plist-get link :url) url))
                           (rsr/agent-sessions--session-links session))))))))
 
-(defun rsr/agent-sessions--open-link-at-point ()
-  "Open the shared external link at point and clear its highlight."
+(defcustom rsr/agent-sessions-linear-org-file
+  (expand-file-name "~/Stillness/Brain/Dashboard/linear.org")
+  "Org file of pulled Linear issues, one heading per issue with ID-LINEAR.
+RET on a Linear link row jumps to the issue's heading here.  nil, or a
+missing file, sends every Linear link to `rsr/agent-sessions-linear-app'."
+  :type '(choice file (const :tag "None" nil)))
+
+(defcustom rsr/agent-sessions-linear-app "/Applications/Linear.app"
+  "Linear desktop app that opens Linear links not found in Org.
+nil, or an app that is not installed, opens them with `browse-url'."
+  :type '(choice directory (const :tag "Browser" nil)))
+
+(defun rsr/agent-sessions--linear-issue-id (url)
+  "Return the issue identifier, such as \"STI-5\", in Linear URL, or nil."
+  (when (string-match "/issue/\\([A-Za-z][A-Za-z0-9]*-[0-9]+\\)" url)
+    (upcase (match-string 1 url))))
+
+(defun rsr/agent-sessions--linear-heading (url)
+  "Return a marker at the heading for Linear URL's issue, or nil.
+The heading is the one in `rsr/agent-sessions-linear-org-file' whose
+ID-LINEAR property is the issue identifier in URL.  This is a line search,
+not `org-find-property': linear-emacs writes multi-line DESCRIPTION values
+into the drawer, which Org then no longer parses as a property drawer."
+  (let ((id (rsr/agent-sessions--linear-issue-id url))
+        (file rsr/agent-sessions-linear-org-file))
+    (when (and id file (file-readable-p file))
+      (with-current-buffer (find-file-noselect file)
+        (org-with-wide-buffer
+         (goto-char (point-min))
+         (let ((case-fold-search t))
+           (when (re-search-forward
+                  (concat "^[ \t]*:ID-LINEAR:[ \t]+" (regexp-quote id) "[ \t]*$")
+                  nil t)
+             (org-back-to-heading t)
+             (point-marker))))))))
+
+(defun rsr/agent-sessions--open-linear-app (url)
+  "Open URL in `rsr/agent-sessions-linear-app', or the browser without it."
+  (let ((app rsr/agent-sessions-linear-app))
+    (if (and app (eq system-type 'darwin) (file-directory-p app))
+        (call-process "open" nil 0 nil "-a" app url)
+      (browse-url url))))
+
+(defun rsr/agent-sessions--show-linear-heading (url display-fn)
+  "Show Linear URL's Org heading with DISPLAY-FN, else open URL in the app."
+  (let ((marker (rsr/agent-sessions--linear-heading url)))
+    (if (not marker)
+        (rsr/agent-sessions--open-linear-app url)
+      (let* ((buf (marker-buffer marker))
+             (shown (funcall display-fn buf))
+             (window (if (windowp shown) shown (get-buffer-window buf))))
+        (with-selected-window (or window (selected-window))
+          (with-current-buffer buf
+            (when (or (< marker (point-min)) (> marker (point-max)))
+              (widen))
+            (goto-char marker)
+            (org-fold-show-context)
+            (org-fold-show-entry)
+            (when window (recenter 0)))))
+      (set-marker marker nil))))
+
+(defun rsr/agent-sessions--open-link-at-point (&optional linear-fn)
+  "Open the shared external link at point and clear its highlight.
+A Linear link goes to LINEAR-FN, called with its URL, when given; every
+other link opens with `browse-url'."
   (pcase (rsr/agent-sessions--link-at-point)
     (`(,_session ,_kind ,link)
      (let ((url (plist-get link :url)))
@@ -3475,7 +3538,9 @@ Point may be on the link row or inside its note."
                 (equal (plist-get candidate :url) url))
               t)
          (rsr/agent-sessions--refresh-if-visible))
-       (browse-url url)))))
+       (if (and linear-fn (equal (plist-get link :kind) "linear"))
+           (funcall linear-fn url)
+         (browse-url url))))))
 
 (defun rsr/agent-sessions--open-file-at-point (display-fn)
   "Open the shared file at point with DISPLAY-FN, clearing its highlight.
@@ -4005,12 +4070,16 @@ looping behaviour everywhere else in Emacs is left alone."
 (defun rsr/agent-sessions-jump ()
   "Act on the thing at point.
 On a session row, pop to its terminal.  Open a shared file or external link
-and clear its highlight.  On a worktree or repo heading, open project.el's
+and clear its highlight; a Linear link jumps to its issue's heading in
+`rsr/agent-sessions-linear-org-file', or opens in the Linear app when the
+issue is not there.  On a worktree or repo heading, open project.el's
 dispatch menu in that directory (see `rsr/agent-sessions--switch-project')."
   (interactive)
   (cond
    ((rsr/agent-sessions--link-at-point)
-    (rsr/agent-sessions--open-link-at-point))
+    (rsr/agent-sessions--open-link-at-point
+     (lambda (url)
+       (rsr/agent-sessions--show-linear-heading url #'pop-to-buffer))))
    ((rsr/agent-sessions--file-at-point)
     (rsr/agent-sessions--open-file-at-point #'pop-to-buffer))
    (t
@@ -4032,12 +4101,17 @@ dispatch menu in that directory (see `rsr/agent-sessions--switch-project')."
 
 (defun rsr/agent-sessions-display ()
   "Display or open the session attachment at point without selecting a terminal.
-Files and sessions use another window; external links open in the browser."
+Files, sessions and a Linear link's Org heading use another window; other
+external links open in the browser."
   (interactive)
   ;; inhibit-same-window: never reuse/replace the dashboard's own window.
   (cond
    ((rsr/agent-sessions--link-at-point)
-    (rsr/agent-sessions--open-link-at-point))
+    (rsr/agent-sessions--open-link-at-point
+     (lambda (url)
+       (rsr/agent-sessions--show-linear-heading
+        url
+        (lambda (buf) (display-buffer buf '(nil (inhibit-same-window . t))))))))
    ((rsr/agent-sessions--file-at-point)
     (rsr/agent-sessions--open-file-at-point
      (lambda (buf) (display-buffer buf '(nil (inhibit-same-window . t))))))
@@ -4062,11 +4136,13 @@ window selected, and count that as looking at the session."
 
 (defun rsr/agent-sessions-display-or-browse ()
   "Display the thing at point, browsing links and shared HTML files.
-For every other shared file or dashboard row, behave exactly like
+A Linear link always opens in `rsr/agent-sessions-linear-app'.  For every
+other shared file or dashboard row, behave exactly like
 `rsr/agent-sessions-display'."
   (interactive)
   (if (rsr/agent-sessions--link-at-point)
-      (rsr/agent-sessions--open-link-at-point)
+      (rsr/agent-sessions--open-link-at-point
+       #'rsr/agent-sessions--open-linear-app)
     (pcase (rsr/agent-sessions--file-at-point)
       (`(,_session ,path ,_file)
        (if (not (string-equal (downcase (or (file-name-extension path) ""))

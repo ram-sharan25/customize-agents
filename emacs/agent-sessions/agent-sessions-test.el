@@ -956,6 +956,100 @@
                 (refresh)
                 (browse "https://github.com/org/repo/pull/1")))))))
 
+(ert-deftest rsr/agent-sessions-linear-issue-id-reads-url ()
+  (should (equal "STI-5" (rsr/agent-sessions--linear-issue-id
+                          "https://linear.app/still-ness/issue/STI-5")))
+  (should (equal "STI-5" (rsr/agent-sessions--linear-issue-id
+                          "https://linear.app/issue/sti-5/some-title")))
+  (should-not (rsr/agent-sessions--linear-issue-id
+               "https://linear.app/still-ness/project/foo")))
+
+(defmacro rsr/agent-sessions-test--with-linear-org (&rest body)
+  "Run BODY with `rsr/agent-sessions-linear-org-file' holding STI-5 and STI-7."
+  (declare (indent 0))
+  `(let* ((dir (make-temp-file "agent-linear" t))
+          (rsr/agent-sessions-linear-org-file
+           (expand-file-name "linear.org" dir)))
+     (unwind-protect
+         (progn
+           (with-temp-file rsr/agent-sessions-linear-org-file
+             (insert "#+title: Linear\n"
+                     ;; linear-emacs's multi-line DESCRIPTION breaks the
+                     ;; drawer for Org's property parser.
+                     "* TODO First\n:PROPERTIES:\n:DESCRIPTION: |\n  line one\n"
+                     "  line two\n:ID-LINEAR: STI-5\n:END:\n"
+                     "* TODO Second\n:PROPERTIES:\n:ID-LINEAR: STI-7\n:END:\nbody\n"))
+           ,@body)
+       (let ((buf (find-buffer-visiting rsr/agent-sessions-linear-org-file)))
+         (when buf (kill-buffer buf)))
+       (delete-directory dir t))))
+
+(ert-deftest rsr/agent-sessions-linear-heading-finds-issue-by-id ()
+  (rsr/agent-sessions-test--with-linear-org
+    (let ((marker (rsr/agent-sessions--linear-heading
+                   "https://linear.app/still-ness/issue/STI-7")))
+      (should marker)
+      (with-current-buffer (marker-buffer marker)
+        (goto-char marker)
+        (should (equal "Second" (org-get-heading t t t t)))))
+    (let ((marker (rsr/agent-sessions--linear-heading
+                   "https://linear.app/still-ness/issue/STI-5")))
+      (should marker)
+      (with-current-buffer (marker-buffer marker)
+        (goto-char marker)
+        (should (equal "First" (org-get-heading t t t t)))))
+    (should-not (rsr/agent-sessions--linear-heading
+                 "https://linear.app/still-ness/issue/STI-9")))
+  (let ((rsr/agent-sessions-linear-org-file "/nonexistent/linear.org"))
+    (should-not (rsr/agent-sessions--linear-heading
+                 "https://linear.app/still-ness/issue/STI-5"))))
+
+(ert-deftest rsr/agent-sessions-linear-keys-route-links ()
+  (rsr/agent-sessions-test--with-linear-org
+    (let* ((link (list :kind "linear" :url ""))
+           (pr (list :kind "pr" :url "https://github.com/org/repo/pull/1"))
+           (current link)
+           (rsr/agent-sessions-linear-app nil)
+           events)
+      (cl-letf (((symbol-function 'rsr/agent-sessions--link-at-point)
+                 (lambda () (list 'session (plist-get current :url) current)))
+                ((symbol-function 'rsr/agent-sessions--set-link-visited)
+                 (lambda (&rest _) nil))
+                ((symbol-function 'browse-url)
+                 (lambda (url) (push (list 'browse url) events)))
+                ((symbol-function 'call-process)
+                 (lambda (&rest args) (push (cons 'process args) events))))
+        (save-window-excursion
+          ;; RET on a ticket in the file lands on its heading.
+          (plist-put link :url "https://linear.app/still-ness/issue/STI-7")
+          (rsr/agent-sessions-jump)
+          (should (equal "Second" (org-get-heading t t t t)))
+          (should-not events))
+        ;; RET on a ticket not in the file: the app, or the browser without it.
+        (plist-put link :url "https://linear.app/still-ness/issue/STI-9")
+        (rsr/agent-sessions-jump)
+        (should (equal (pop events)
+                       '(browse "https://linear.app/still-ness/issue/STI-9")))
+        (let ((rsr/agent-sessions-linear-app temporary-file-directory)
+              (system-type 'darwin))
+          (rsr/agent-sessions-jump)
+          (should (equal (pop events)
+                         (list 'process "open" nil 0 nil "-a"
+                               temporary-file-directory
+                               "https://linear.app/still-ness/issue/STI-9")))
+          ;; V skips the Org file even when the ticket is in it.
+          (plist-put link :url "https://linear.app/still-ness/issue/STI-5")
+          (rsr/agent-sessions-display-or-browse)
+          (should (equal (pop events)
+                         (list 'process "open" nil 0 nil "-a"
+                               temporary-file-directory
+                               "https://linear.app/still-ness/issue/STI-5")))
+          ;; Other link kinds still browse.
+          (setq current pr)
+          (rsr/agent-sessions-jump)
+          (should (equal (pop events)
+                         '(browse "https://github.com/org/repo/pull/1"))))))))
+
 (ert-deftest rsr/agent-sessions-w-copies-attachment-value ()
   (let ((kill-ring nil)
         (link nil)

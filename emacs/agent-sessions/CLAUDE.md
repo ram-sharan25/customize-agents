@@ -730,6 +730,21 @@ decided not to read at all — and an attachment row, unlike a session, has
 somewhere to read its current state back from. `RET` and `v` browse an external
 link, and `k` detaches it without affecting the remote issue or pull request.
 
+**A Linear link opens in Emacs first, the app second, the browser last.** `RET`
+jumps to the issue's heading in `rsr/agent-sessions-linear-org-file` (the
+`linear.org` that linear-emacs pulls into), matched on the `ID-LINEAR`
+property against the identifier in the URL — not the URL itself, because the
+pulled `:LINK:` drops the workspace segment the shared URL carries. `v` shows
+that heading in another window. You are in Emacs when you press `RET`, and the
+heading already carries the description and state, so staying is the cheap
+default. The file is a snapshot of issues assigned to the user as of the last
+pull, so a miss is normal, not an error: a ticket that is not there opens in
+`rsr/agent-sessions-linear-app`. `V` is the way out of Emacs, so it always
+opens the app, even when the heading exists. Without the app — nil, not
+installed, or not macOS — both fall to `browse-url`. agent-sessions reads the
+Org file directly and never requires linear-emacs, so the jump works in an
+Emacs that has not loaded it, and a missing file only costs the jump.
+
 **The sharing command fails loudly, unlike the hook forwarders.** Those exit 0 into the
 void by design: a hook firing into a dead Emacs must not break the agent's
 turn. This one is the opposite — an agent that believes it has handed over a
