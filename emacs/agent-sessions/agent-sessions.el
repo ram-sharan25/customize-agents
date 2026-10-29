@@ -454,18 +454,60 @@ See `rsr/agent-session--clear-attention-on-focus'."
     (when changed
       (rsr/agent-sessions--refresh-if-visible))))
 
-(defun rsr/agent-session--desktop-notify (title body)
+(defcustom rsr/agent-session-terminal-notifier
+  "/Applications/terminal-notifier.app/Contents/MacOS/terminal-notifier"
+  "The `terminal-notifier' binary used for clickable macOS notifications.
+It must live inside an app bundle in /Applications or ~/Applications: macOS
+grants notification permission only to apps in those locations, so Homebrew's
+copy under /opt/homebrew/Cellar is refused.  When missing, `osascript' is used."
+  :type 'file)
+
+(defun rsr/agent-session-focus-from-notification (name)
+  "Raise Emacs and show the session terminal buffer called NAME.
+The click action of a `terminal-notifier' notification, run via emacsclient."
+  (let ((buf (get-buffer name)))
+    (select-frame-set-input-focus (selected-frame))
+    (if (buffer-live-p buf)
+        (rsr/agent-sessions--show-terminal buf)
+      (message "Session %s is gone." name))))
+
+(defun rsr/agent-session--notify-click-command (buf)
+  "Shell command that focuses BUF when its notification is clicked, or nil.
+Needs emacsclient and a running server, which the click talks to."
+  (let ((client (executable-find "emacsclient")))
+    (when (and client (buffer-live-p buf)
+               (fboundp 'server-running-p) (server-running-p))
+      (format "%s -n -e %s"
+              (shell-quote-argument client)
+              (shell-quote-argument
+               (format "(rsr/agent-session-focus-from-notification %S)"
+                       (buffer-name buf)))))))
+
+(defun rsr/agent-session--desktop-notify (title body &optional buf)
   "Show a desktop notification with TITLE and BODY.
-Uses `osascript' on macOS, D-Bus `notifications-notify' where available, and
-falls back to the echo area otherwise.  Always non-blocking."
-  (cond
-   ((eq system-type 'darwin)
-    (call-process "osascript" nil 0 nil
-                  "-e" (format "display notification %S with title %S"
-                               body title)))
-   ((fboundp 'notifications-notify)
-    (notifications-notify :title title :body body))
-   (t (message "%s: %s" title body))))
+On macOS, `terminal-notifier' is used when installed so that clicking the
+notification jumps to session terminal BUF; otherwise `osascript', whose
+notifications only open Script Editor when clicked.  D-Bus
+`notifications-notify' where available, and the echo area otherwise.  Always
+non-blocking."
+  (let ((notifier (and (eq system-type 'darwin)
+                       (file-executable-p rsr/agent-session-terminal-notifier)
+                       rsr/agent-session-terminal-notifier))
+        (click (and buf (rsr/agent-session--notify-click-command buf))))
+    (cond
+     (notifier
+      ;; One group per buffer, so a newer notice replaces the stale one.
+      (apply #'call-process notifier nil 0 nil
+             "-title" title "-message" body
+             "-group" (format "agent-session:%s" (if buf (buffer-name buf) title))
+             (and click (list "-execute" click))))
+     ((eq system-type 'darwin)
+      (call-process "osascript" nil 0 nil
+                    "-e" (format "display notification %S with title %S"
+                                 body title)))
+     ((fboundp 'notifications-notify)
+      (notifications-notify :title title :body body))
+     (t (message "%s: %s" title body)))))
 
 (defun rsr/agent-session--notify-attention (buf agent-type info status)
   "Notify that BUF's AGENT-TYPE session needs attention.
@@ -485,7 +527,8 @@ the body names the agent type, state, and its terminal title (task summary)."
      (format "%s %s: %s"
              agent-type
              (if (eq status 'error) "error" "needs attention")
-             title))))
+             title)
+     buf)))
 
 (defun rsr/agent-sessions--hook-buffer (transport-id agent-type payload)
   "Resolve a hook PAYLOAD to its terminal buffer.
