@@ -113,13 +113,14 @@
                   (should (string-match-p "sample-repo\n  Tasks (1)"
                                           (buffer-string)))
                   (should (string-match-p "No folder (0)" (buffer-string)))
-                  (should (string-match-p "sample-worktree.*Task  (feature/test)"
+                  ;; The `@' column names the branch, so no trailing copy.
+                  (should (string-match-p "@feature/test +.*Task$"
                                           (buffer-string))))
                 (let ((rsr/agent-sessions-group-by-folder nil))
                   (rsr/agent-sessions--refresh)
                   (should (string-match-p
                            (concat (regexp-quote
-                                    "  sample-worktree (feature/test)\n")
+                                    "sample-repo @feature/test\n")
                                    "    .*Task.*\\[Tasks\\]")
                            (buffer-string)))
                   (let ((row (seq-find
@@ -130,12 +131,17 @@
                   (setq rsr/agent-sessions--overview-level 1)
                   (rsr/agent-sessions--show-overview-level 1)
                   (rsr/agent-sessions--refresh)
+                  ;; The inlined worktree has no line to fold to; its rows
+                  ;; fold as the repo's children instead.
                   (let* ((repo-section
                           (car (oref magit-root-section children)))
                          (worktree-section
-                          (car (oref repo-section children))))
+                          (car (oref repo-section children)))
+                         (row-section
+                          (car (oref worktree-section children))))
                     (should-not (oref repo-section hidden))
-                    (should (oref worktree-section hidden)))
+                    (should-not (oref worktree-section hidden))
+                    (should (oref row-section hidden)))
                   (setq rsr/agent-sessions--overview-level 3)
                   (rsr/agent-sessions--show-overview-level 3)
                   (rsr/agent-sessions--refresh)
@@ -164,17 +170,17 @@
               (cl-letf (((symbol-function 'rsr/agent-sessions--live-entries)
                          (lambda () entries)))
                 (rsr/agent-sessions--refresh)
-                (should (= rsr/agent-sessions--worktree-column-width 19))
+                (should (= rsr/agent-sessions--worktree-column-width 20))
                 (let ((lines (split-string (buffer-string) "\n" t)))
                   (should (seq-some
                            (lambda (line)
                              (string-match-p
-                              "^    short +  .*First task$" line))
+                              "^    @short +  .*First task$" line))
                            lines))
                   (should (seq-some
                            (lambda (line)
                              (string-match-p
-                              "^    long-worktree-name +  .*Second task$" line))
+                              "^    @long-worktree-name +  .*Second task$" line))
                            lines))))))
         (mapc #'kill-buffer (list a b dashboard))
         (delete-directory root t)))))

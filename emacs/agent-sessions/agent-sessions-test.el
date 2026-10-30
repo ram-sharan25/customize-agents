@@ -383,6 +383,114 @@ terminal's registry entry afterwards."
            (list :name "customize-agents" :root "/code/customize-agents/"))))
       (should (equal (reverse icons) '(tmux repo))))))
 
+(defmacro rsr/agent-sessions-test--with-git-repo (var &rest body)
+  "Run BODY with VAR bound to a fresh git repo on branch `main'."
+  (declare (indent 1))
+  `(let ((,var (file-name-as-directory (make-temp-file "at-label-" t))))
+     (unwind-protect
+         (let ((default-directory ,var))
+           (dolist (args '(("init" "-q" "-b" "main")
+                           ("-c" "user.email=t@t" "-c" "user.name=t"
+                            "commit" "-q" "--allow-empty" "-m" "init")))
+             (apply #'call-process "git" nil nil nil args))
+           ,@body)
+       (delete-directory ,var t))))
+
+(ert-deftest rsr/agent-sessions-head-branch-reads-every-head-kind ()
+  (rsr/agent-sessions-test--with-git-repo repo
+    (should (equal (rsr/agent-sessions--head-branch repo) "main"))
+    ;; A linked worktree's .git is a file pointing at its gitdir.
+    (let ((linked (concat (directory-file-name repo) "-linked/")))
+      (unwind-protect
+          (progn
+            (call-process "git" nil nil nil "worktree" "add" "-q" "-b" "feature/x"
+                          (directory-file-name linked))
+            (should (equal (rsr/agent-sessions--head-branch linked) "feature/x")))
+        (delete-directory linked t)))
+    ;; A switched branch shows without re-registering anything.
+    (call-process "git" nil nil nil "checkout" "-q" "-b" "other")
+    (should (equal (rsr/agent-sessions--head-branch repo) "other"))
+    (call-process "git" nil nil nil "checkout" "-q" "--detach")
+    (should (eq (rsr/agent-sessions--head-branch repo) 'detached)))
+  (should-not (rsr/agent-sessions--head-branch nil))
+  (should-not (rsr/agent-sessions--head-branch "/nonexistent/path/")))
+
+(ert-deftest rsr/agent-sessions-at-label-follows-setting-and-head ()
+  (rsr/agent-sessions-test--with-git-repo repo
+    (let ((rsr/agent-sessions-worktree-label 'branch))
+      ;; Live HEAD beats a stale registered branch.
+      (should (equal (rsr/agent-sessions--at-label repo "wt" "stale") "@main"))
+      (call-process "git" nil nil nil "checkout" "-q" "--detach")
+      ;; Detached: the folder name, not the stale branch.
+      (should (equal (rsr/agent-sessions--at-label repo "wt" "stale") "@wt")))
+    (let ((rsr/agent-sessions-worktree-label 'folder))
+      (should (equal (rsr/agent-sessions--at-label repo "wt" "main") "@wt"))))
+  ;; Unreadable HEAD: the registered branch stands in.
+  (let ((rsr/agent-sessions-worktree-label 'branch))
+    (should (equal (rsr/agent-sessions--at-label "/nonexistent/" "wt" "dev")
+                   "@dev"))
+    (should (equal (rsr/agent-sessions--at-label "/nonexistent/wt/" nil nil)
+                   "@wt"))))
+
+(defun rsr/agent-sessions-test--render-repo (repo)
+  "Render REPO into a fresh dashboard buffer; return its text."
+  (with-temp-buffer
+    (rsr/agent-sessions-mode)
+    (let ((inhibit-read-only t)
+          (rsr/agent-sessions-icons nil)
+          (rsr/agent-sessions-group-by-folder nil))
+      (cl-letf (((symbol-function 'rsr/agent-sessions--insert-note) #'ignore)
+                ((symbol-function 'rsr/agent-sessions--insert-entries)
+                 (lambda (entries)
+                   (dolist (e entries)
+                     (insert "    ROW " (plist-get e :id) "\n")))))
+        (magit-insert-section (rsr/agent-sessions-root)
+          (rsr/agent-sessions--insert-repo repo))))
+    (buffer-substring-no-properties (point-min) (point-max))))
+
+(ert-deftest rsr/agent-sessions-single-worktree-goes-inline ()
+  (let* ((rsr/agent-sessions-worktree-label 'branch)
+         (main (list :label "app (main)" :path "/nonexistent/app/" :name "app"
+                     :branch "main" :entries (list (list :id "a"))))
+         (empty (list :label "app-x (x)" :path "/nonexistent/app-x/"
+                      :name "app-x" :branch "x" :entries nil))
+         (repo (list :name "app" :root "/nonexistent/app/"
+                     :worktrees (list empty main))))
+    (let ((rsr/agent-sessions-inline-single-worktree t))
+      ;; Its sessions sit under the repo line; the empty worktree keeps a row.
+      (should (equal (rsr/agent-sessions-test--render-repo repo)
+                     "app @main\n    ROW a\n  @x\n\n")))
+    (let ((rsr/agent-sessions-inline-single-worktree nil))
+      (should (equal (rsr/agent-sessions-test--render-repo repo)
+                     "app\n  @x\n  @main\n    ROW a\n\n")))))
+
+(ert-deftest rsr/agent-sessions-several-worktrees-keep-their-rows ()
+  (let* ((rsr/agent-sessions-inline-single-worktree t)
+         (rsr/agent-sessions-worktree-label 'branch)
+         (repo (list :name "app" :root "/nonexistent/app/"
+                     :worktrees
+                     (list (list :path "/nonexistent/app/" :name "app"
+                                 :branch "main" :entries (list (list :id "a")))
+                           (list :path "/nonexistent/app-x/" :name "app-x"
+                                 :branch "x" :entries (list (list :id "b")))))))
+    (should (equal (rsr/agent-sessions-test--render-repo repo)
+                   "app\n  @main\n    ROW a\n  @x\n    ROW b\n\n"))))
+
+(ert-deftest rsr/agent-sessions-empty-worktree-row-is-dim ()
+  (with-temp-buffer
+    (rsr/agent-sessions-mode)
+    (let ((inhibit-read-only t)
+          (rsr/agent-sessions-icons nil))
+      (cl-letf (((symbol-function 'rsr/agent-sessions--insert-note) #'ignore))
+        (magit-insert-section (rsr/agent-sessions-root)
+          (rsr/agent-sessions--insert-worktree
+           (list :path "/nonexistent/app-x/" :name "app-x" :branch "x"))))
+      (goto-char (point-min))
+      (search-forward "@x")
+      (should (memq 'rsr/agent-session-detail
+                    (ensure-list (get-text-property (1- (point))
+                                                    'font-lock-face)))))))
+
 (ert-deftest rsr/agent-sessions-flat-worktree-has-no-heading ()
   (with-temp-buffer
     (rsr/agent-sessions-mode)
