@@ -813,11 +813,22 @@ PATH` writes the `registered_folders` table under the same durable session
 identity as notes and links (`--session-note-keys`), so a folder registered
 on a bare terminal survives the agent getting an id. A session has one Plans
 folder (a new one replaces it) and any number of code folders (one per
-repository of a multi-repository task). `o c` asks which one when there are
+repository of a multi-repository task). `O c` asks which one when there are
 several; it never falls back to the session's directory, because a planning
 session's directory is the Plans folder and opening it in magit would be a
 guess. The table is not `session_folders`: that name was already the
 dashboard's own folder-grouping table.
+
+**The user registers folders too, through the same write.** `O c`/`O p` on a
+session row with nothing registered asks for a folder instead of giving up,
+and `O C`/`O P` ask even when one is registered; both go through
+`--register-folder`, so the user and the agent share one field and the last
+writer wins, as with the state column. Assigning works only on a session row: a
+heading's folders are the union of its sessions', so it has no slot of its own
+to write. The code picker offers projectile's known projects, magit's
+`magit-repository-directories` scan, the dashboard's repositories and every
+registered code folder, and both pickers end with a typed path. There is no
+unassign key; nobody has needed one yet.
 
 ## Editing
 
