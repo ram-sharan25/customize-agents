@@ -182,6 +182,19 @@ Icons come from `nerd-icons' and are left out when it is not installed."
   :type 'boolean
   :group 'rsr/agent-sessions)
 
+(defcustom rsr/agent-sessions-display-side 'left
+  "Side of the frame `rsr/agent-sessions-list' opens the dashboard on.
+A side window stays put while other buffers come and go, so the dashboard can
+sit beside the work.  nil opens it in an ordinary window via `pop-to-buffer'."
+  :type '(choice (const left) (const right) (const top) (const bottom)
+                 (const :tag "Ordinary window" nil))
+  :group 'rsr/agent-sessions)
+
+(defcustom rsr/agent-sessions-window-width 45
+  "Width in columns of the dashboard's side window on the left or right."
+  :type 'integer
+  :group 'rsr/agent-sessions)
+
 (defconst rsr/agent-session-status-alist
   '((claude . ((SessionStart . stopped)
                (Stop . needs-attention)
@@ -729,6 +742,7 @@ session's start directory for the repo root."
       (if (and (null (plist-get info :repo)) (rsr/agent-tmux-proxy-p buf))
           (let ((session rsr/agent-tmux-session))
             (list :repo session
+                  :tmux-session session
                   :repo-root (or (rsr/agent-tmux-session-path session)
                                  (rsr/agent-sessions--canonical-path dir))
                   :worktree session
@@ -736,6 +750,15 @@ session's start directory for the repo root."
                   :branch nil
                   :worktree-path (rsr/agent-sessions--canonical-path dir)))
         info))))
+
+(defun rsr/agent-sessions--session-tmux-group (session)
+  "The tmux session SESSION is grouped under, or nil when it groups by repo.
+Only an agent outside any git repository groups by its tmux session.  One
+working in a repo groups with that repo, whichever tmux session started it, so
+the agents changing the same code are always listed together."
+  (let ((buf (plist-get session :buffer)))
+    (and (buffer-live-p buf)
+         (plist-get (rsr/agent-sessions--buffer-repo-info buf) :tmux-session))))
 
 (defun rsr/agent-sessions--buffer-terminal-type (buf)
   "Return a symbol naming BUF's terminal backend (`vterm', `eat', `ghostel', or `term')."
@@ -1187,19 +1210,19 @@ not push the titles of stated rows out of line with unstated ones."
 
 (defface rsr/agent-session-status-running
   '((t :inherit success))
-  "Face for the `running' status word.")
+  "Face for the `running' status glyph.")
 
 (defface rsr/agent-session-status-idle
   '((t :inherit font-lock-constant-face))
-  "Face for the `idle' status word.")
+  "Face for the `idle' status glyph.")
 
 (defface rsr/agent-session-status-stopped
   '((t :inherit shadow))
-  "Face for the `stopped' status word.")
+  "Face for the `stopped' status glyph.")
 
 (defface rsr/agent-session-status
   '((t :inherit font-lock-type-face))
-  "Face for any other status word.")
+  "Face for any other status glyph.")
 
 (defface rsr/agent-session-worktree-name
   '((t :inherit font-lock-string-face))
@@ -1227,8 +1250,8 @@ not push the titles of stated rows out of line with unstated ones."
     (folder nerd-icons-mdicon "nf-md-folder_star" font-lock-function-name-face)
     (note nerd-icons-mdicon "nf-md-note_text_outline" rsr/agent-session-note)
     (link nerd-icons-octicon "nf-oct-link_external" rsr/agent-session-link-kind)
-    ("claude" nerd-icons-mdicon "nf-md-robot" font-lock-constant-face)
-    ("pi" nerd-icons-mdicon "nf-md-pi" font-lock-type-face)
+    ("claude" nerd-icons-codicon "nf-cod-claude" font-lock-constant-face)
+    ("pi" nerd-icons-mdicon "nf-md-pi_box" font-lock-type-face)
     ("codex" nerd-icons-mdicon "nf-md-code_braces" font-lock-string-face)
     (agent nerd-icons-mdicon "nf-md-robot_outline" rsr/agent-session-agent))
   "(KIND FUNCTION NAME FACE) for each line icon.
@@ -1281,12 +1304,24 @@ unopened file or link), whose color must hold across the whole line."
     s))
 
 (defun rsr/agent-sessions--status-face (status)
-  "The face for the STATUS word on a session row."
+  "The face for the STATUS glyph on a session row."
   (pcase status
     ('running 'rsr/agent-session-status-running)
     ('idle 'rsr/agent-session-status-idle)
     ('stopped 'rsr/agent-session-status-stopped)
     (_ 'rsr/agent-session-status)))
+
+(defun rsr/agent-sessions--status-glyph (status)
+  "The glyph that stands for STATUS at the start of a session row.
+A glyph rather than the status word keeps the row narrow enough for a side
+window; the needs-attention and error row faces still span the whole line."
+  (pcase status
+    ('running "●")
+    ('idle "◐")
+    ('stopped "○")
+    ('needs-attention "●")
+    ('error "✖")
+    (_ " ")))
 
 (defun rsr/agent-sessions--detail (string)
   "STRING in `rsr/agent-session-detail', or \"\" for an empty one."
@@ -1325,13 +1360,18 @@ indentation conveys the relationship."
          (session (plist-get entry :session))
          (status (plist-get session :status))
          (face (rsr/agent-sessions--face-for status))
-         (marker (pcase status
-                   ('needs-attention "● ")
-                   ('error "✖ ")
-                   (_ "  ")))
+         (marker (propertize (concat (rsr/agent-sessions--status-glyph status) " ")
+                             'font-lock-face (rsr/agent-sessions--status-face status)))
          (title (or (plist-get entry :title) ""))
          (branched-from (plist-get session :branched-from))
          (indent (make-string (* 2 (or depth 0)) ?\s))
+         ;; A child row draws `└' in its last indent step, so the tie to the
+         ;; parent above shows even where the indent alone is easy to miss.
+         (connector (if (and depth (> depth 0))
+                        (concat (make-string (* 2 (1- depth)) ?\s)
+                                (propertize "└ " 'font-lock-face
+                                            'rsr/agent-session-detail))
+                      ""))
          (base "    ")
          (folder (and (not rsr/agent-sessions-group-by-folder)
                       (rsr/agent-sessions--folder
@@ -1344,7 +1384,7 @@ indentation conveys the relationship."
       ;; fold indicator.
       (magit-insert-heading
         (rsr/agent-sessions--row-text
-         (concat base indent
+         (concat base connector
                  (when rsr/agent-sessions-group-by-folder
                    (propertize
                     (format
@@ -1354,9 +1394,7 @@ indentation conveys the relationship."
                  marker
                  (rsr/agent-sessions--icon (plist-get session :agent-type))
                  (propertize (format "%-7s " (or (plist-get session :agent-type) ""))
-                             'font-lock-face 'rsr/agent-session-agent)
-                 (propertize (format "%-16s " status)
-                             'font-lock-face (rsr/agent-sessions--status-face status)))
+                             'font-lock-face 'rsr/agent-session-agent))
          (rsr/agent-sessions--session-state session)
          (concat title
                  (rsr/agent-orchestration--row-badge id)
@@ -2049,10 +2087,14 @@ a restart.  Backed by the `order_entries' table.")
   (format "%s" (or (plist-get folder :id) "none")))
 
 (defun rsr/agent-sessions--repo-key (repo)
-  "Manual-order key for REPO: its canonical root, else its display name."
-  (or (rsr/agent-sessions--canonical-path (plist-get repo :root))
-      (plist-get repo :name)
-      "?"))
+  "Manual-order key for REPO: its canonical root, else its display name.
+A tmux group is keyed by its session name, since two tmux sessions can share a
+start directory and must still order, and take notes, apart."
+  (if (plist-get repo :tmux)
+      (concat "tmux:" (plist-get repo :name))
+    (or (rsr/agent-sessions--canonical-path (plist-get repo :root))
+        (plist-get repo :name)
+        "?")))
 
 (defun rsr/agent-sessions--worktree-key (wt)
   "Manual-order key for worktree WT: its canonical path, else its label.
@@ -2528,24 +2570,22 @@ and the next move is the user's."
   '((t :inherit rsr/agent-session-state-review))
   "Face for the IMPL-REVIEW state: the implementation is waiting on the user.")
 
-(defface rsr/agent-session-state-pr-open
-  '((t :inherit rsr/agent-session-state-review))
+(defface rsr/agent-session-state-pr-open '((t :inherit bold :foreground "#73daca"))
   "Face for the PR-OPEN state: the PR is up and waiting on the user.")
 
-(defface rsr/agent-session-state-working '((t :inherit shadow))
-  "Face shared by the states in which the agent, not the user, holds the work.")
-
-(defface rsr/agent-session-state-planning
-  '((t :inherit rsr/agent-session-state-working))
+;; The states in which the agent holds the work are plain; bold is kept for the
+;; ones where the next move is the user's, so it reads as a call to act.
+(defface rsr/agent-session-state-planning '((t :foreground "#7dcfff"))
   "Face for the PLANNING state.")
 
-(defface rsr/agent-session-state-implementing
-  '((t :inherit rsr/agent-session-state-working))
+(defface rsr/agent-session-state-implementing '((t :foreground "#9ece6a"))
   "Face for the IMPLEMENTING state.")
 
-(defface rsr/agent-session-state-autofix
-  '((t :inherit rsr/agent-session-state-working))
+(defface rsr/agent-session-state-autofix '((t :foreground "#ff9e64"))
   "Face for the AUTOFIX state.")
+
+(defface rsr/agent-session-state-blocked '((t :inherit bold :foreground "#f7768e"))
+  "Face for the BLOCKED state: nothing moves until the user unblocks it.")
 
 (defface rsr/agent-session-state-learn '((t :inherit bold :foreground "#bb9af7"))
   "Face for the LEARN state: finished, but there is something here to take away.")
@@ -3634,8 +3674,10 @@ not make them learn two highlights for it.")
   "Face for an external link not opened since the agent registered it.")
 
 (defface rsr/agent-session-link
-  '((t :inherit link))
-  "Face for an external link the user has already opened.")
+  '((t :inherit link :underline nil))
+  "Face for the URL of an external link the user has already opened.
+Only the URL carries it, and without `link''s underline: spread over the whole
+row, the underline ran from the left edge and read as a rule between rows.")
 
 (defun rsr/agent-sessions--insert-link (link indent)
   "Insert a row for shared external LINK, indented by INDENT."
@@ -3654,11 +3696,10 @@ not make them learn two highlights for it.")
                 (rsr/agent-sessions--icon 'link)
                 (propertize (format "%-28s " kind-label)
                             'font-lock-face 'rsr/agent-session-link-kind)
-                (or (plist-get link :label) url)
+                (propertize (or (plist-get link :label) url)
+                            'font-lock-face 'rsr/agent-session-link)
                 "\n")
-        (if unvisited
-                            'rsr/agent-session-link-unvisited
-                          'rsr/agent-session-link)))
+        (if unvisited 'rsr/agent-session-link-unvisited 'default)))
       (rsr/agent-sessions--insert-note
        (list (rsr/agent-sessions--link-note-key url))
        (concat indent "    ")))))
@@ -3714,17 +3755,27 @@ same path under another session by magit's parent chain."
     (rsr/agent-sessions--insert-file file indent)))
 
 (defun rsr/agent-sessions--build-tree (entries)
-  "Group live ENTRIES into repos, with worktrees in the non-folder view."
+  "Group live ENTRIES into repos, with worktrees in the non-folder view.
+In that view an agent outside any git repository is grouped by its tmux
+session instead, and the group has a single headingless worktree: the tmux
+session is the whole context, so a worktree row would only repeat its name.
+Keying such groups by start directory merged unrelated tmux sessions that
+happened to share one, and split one session across its agents' directories."
   (let ((repos
          (mapcar
           (lambda (rg)
             (let* ((rentries (cdr rg))
                    (session (plist-get (car rentries) :session))
-                   (root (rsr/agent-sessions--session-repo session)))
+                   (root (rsr/agent-sessions--session-repo session))
+                   (tmux (and (eq (car-safe (car rg)) 'tmux) (cdr (car rg)))))
               (append
-               (list :name (or (plist-get session :repo) "?")
+               (list :name (or tmux (plist-get session :repo) "?")
                      :root root :entries rentries)
-               (unless rsr/agent-sessions-group-by-folder
+               (when tmux
+                 (list :tmux t
+                       :worktrees (list (list :label tmux :path root :flat t
+                                              :entries rentries))))
+               (unless (or tmux rsr/agent-sessions-group-by-folder)
                  (list :worktrees
                        (rsr/agent-sessions--worktrees-for
                         root
@@ -3734,8 +3785,13 @@ same path under another session by magit's parent chain."
                             (plist-get (plist-get e :session) :worktree-path)))
                          rentries)))))))
           (seq-group-by
-           (lambda (e) (rsr/agent-sessions--session-repo
-                        (plist-get e :session)))
+           (lambda (e)
+             (let* ((session (plist-get e :session))
+                    (tmux (and (not rsr/agent-sessions-group-by-folder)
+                               (rsr/agent-sessions--session-tmux-group session))))
+               (if tmux
+                   (cons 'tmux tmux)
+                 (rsr/agent-sessions--session-repo session))))
            entries))))
     (if (not rsr/agent-sessions-group-by-folder)
         (if rsr/agent-sessions-sort-by-activity
@@ -3765,23 +3821,28 @@ same path under another session by magit's parent chain."
                                             (plist-get b :name))))))))))
 
 (defun rsr/agent-sessions--insert-worktree (wt)
+  "Insert worktree WT; a `:flat' one (a tmux group's) gets no heading row.
+The section is kept even without a heading, because reordering a row looks
+up its group through the enclosing worktree section."
   (let ((entries (plist-get wt :entries)))
     (magit-insert-section (rsr/agent-session-worktree
                            (list :label (plist-get wt :label)
                                  :path (plist-get wt :path)))
-      (magit-insert-heading
-        (if rsr/agent-sessions-group-by-folder "    " "  ")
-        (rsr/agent-sessions--icon 'worktree)
-        (propertize (plist-get wt :label) 'font-lock-face 'magit-section-heading))
-      (rsr/agent-sessions--insert-note
-       (list (rsr/agent-sessions--worktree-note-key wt))
-       (if rsr/agent-sessions-group-by-folder "      " "    "))
+      (unless (plist-get wt :flat)
+        (magit-insert-heading
+          (if rsr/agent-sessions-group-by-folder "    " "  ")
+          (rsr/agent-sessions--icon 'worktree)
+          (propertize (plist-get wt :label) 'font-lock-face 'magit-section-heading))
+        (rsr/agent-sessions--insert-note
+         (list (rsr/agent-sessions--worktree-note-key wt))
+         (if rsr/agent-sessions-group-by-folder "      " "    ")))
       (rsr/agent-sessions--insert-entries entries))))
 
 (defun rsr/agent-sessions--insert-repo (repo)
   (magit-insert-section (rsr/agent-session-repo
                          (list :name (plist-get repo :name)
-                               :root (plist-get repo :root)))
+                               :root (plist-get repo :root)
+                               :tmux (plist-get repo :tmux)))
     (magit-insert-heading
       (rsr/agent-sessions--icon 'repo)
       (propertize (plist-get repo :name) 'font-lock-face 'rsr/agent-session-repo))
@@ -5495,6 +5556,9 @@ This makes `C-x p' project commands (and anything else keyed off
   "Major mode listing Claude/Codex sessions running in vterm, as a
 repo > worktree > session tree, or repo > folder > session with `f'.
 Sections fold with TAB; Shift+TAB toggles overview; `F' manages folders."
+  ;; Cut long titles at the window edge rather than wrapping them: the
+  ;; dashboard is meant to fit a narrow side window, one line per row.
+  (setq-local truncate-lines t)
   (add-hook 'post-command-hook
             #'rsr/agent-sessions--sync-default-directory nil t))
 
@@ -7270,6 +7334,13 @@ the tmux reattach at startup, and starting the Emacs server
       (unless (derived-mode-p 'rsr/agent-sessions-mode)
         (rsr/agent-sessions-mode))
       (rsr/agent-sessions--refresh))
-    (pop-to-buffer buf)))
+    (if rsr/agent-sessions-display-side
+        (select-window
+         (display-buffer-in-side-window
+          buf `((side . ,rsr/agent-sessions-display-side)
+                (slot . 0)
+                (window-width . ,rsr/agent-sessions-window-width)
+                (preserve-size . (t . nil)))))
+      (pop-to-buffer buf))))
 
 (provide 'agent-sessions)

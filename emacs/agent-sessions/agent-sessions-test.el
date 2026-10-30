@@ -186,9 +186,115 @@
                 ((symbol-function 'rsr/agent-sessions--insert-links) #'ignore)
                 ((symbol-function 'rsr/agent-sessions--insert-files) #'ignore))
         (rsr/agent-sessions--insert-session entry)
-        (should (string-match-p "running" (buffer-string)))
+        (should (string-match-p "●" (buffer-string)))
         (should (string-match-p "Investigate the issue" (buffer-string)))
+        (should-not (string-match-p "running" (buffer-string)))
         (should-not (string-match-p "PreToolUse" (buffer-string)))))))
+
+(ert-deftest rsr/agent-sessions-child-row-draws-connector ()
+  (with-temp-buffer
+    (rsr/agent-sessions-mode)
+    (let ((inhibit-read-only t)
+          (rsr/agent-sessions--row-status nil)
+          (entry (list :id "child" :title "Explore"
+                       :session (list :agent-type "claude" :status 'stopped))))
+      (cl-letf (((symbol-function 'rsr/agent-sessions--session-state)
+                 (lambda (_) nil))
+                ((symbol-function 'rsr/agent-orchestration--row-badge)
+                 (lambda (_) ""))
+                ((symbol-function 'rsr/agent-sessions--insert-note) #'ignore)
+                ((symbol-function 'rsr/agent-sessions--insert-links) #'ignore)
+                ((symbol-function 'rsr/agent-sessions--insert-files) #'ignore))
+        (rsr/agent-sessions--insert-session entry 1 t)
+        (should (string-match-p "\\`    └ ○ " (buffer-string)))))))
+
+(ert-deftest rsr/agent-sessions-status-glyph-per-status ()
+  (should (equal (rsr/agent-sessions--status-glyph 'running) "●"))
+  (should (equal (rsr/agent-sessions--status-glyph 'idle) "◐"))
+  (should (equal (rsr/agent-sessions--status-glyph 'stopped) "○"))
+  (should (equal (rsr/agent-sessions--status-glyph 'needs-attention) "●"))
+  (should (equal (rsr/agent-sessions--status-glyph 'error) "✖")))
+
+(ert-deftest rsr/agent-sessions-every-listed-state-has-a-face ()
+  (dolist (state rsr/agent-sessions-states)
+    (should (rsr/agent-sessions--state-face state)))
+  ;; The agent-held states are told apart by color now, not all shadow.
+  (should-not (equal (face-attribute 'rsr/agent-session-state-planning :foreground)
+                     (face-attribute 'rsr/agent-session-state-implementing
+                                     :foreground))))
+
+(ert-deftest rsr/agent-sessions-tmux-agents-group-by-tmux-session ()
+  "Non-git tmux agents group by session name; a repo agent stays with its repo."
+  (rsr/agent-sessions-test--with-temp-db
+    (let* ((rsr/agent-sessions-group-by-folder nil)
+           (rsr/agent-sessions-sort-by-activity nil)
+           (shared "/plans/shared/")
+           (entries
+            (list (list :id "a" :session (list :tmux "basemap" :repo "basemap"
+                                               :repo-root shared
+                                               :worktree-path "/plans/overlay/"))
+                  (list :id "b" :session (list :tmux "basemap" :repo "basemap"
+                                               :repo-root shared
+                                               :worktree-path "/plans/artifacts/"))
+                  (list :id "c" :session (list :tmux "customize-agents"
+                                               :repo "customize-agents"
+                                               :repo-root shared
+                                               :worktree-path shared))
+                  (list :id "d" :session (list :tmux nil :repo "my-app"
+                                               :repo-root "/code/my-app/"
+                                               :worktree "my-app (main)"
+                                               :worktree-path "/code/my-app/")))))
+      (cl-letf (((symbol-function 'rsr/agent-sessions--session-tmux-group)
+                 (lambda (session) (plist-get session :tmux))))
+        (let* ((repos (rsr/agent-sessions--build-tree entries))
+               (by-name (lambda (name)
+                          (seq-find (lambda (r) (equal name (plist-get r :name)))
+                                    repos)))
+               (basemap (funcall by-name "basemap"))
+               (agents (funcall by-name "customize-agents"))
+               (app (funcall by-name "my-app")))
+          (should (= (length repos) 3))
+          ;; Two directories, one tmux session: one flat group, not two rows.
+          (should (plist-get basemap :tmux))
+          (should (= (length (plist-get basemap :worktrees)) 1))
+          (should (plist-get (car (plist-get basemap :worktrees)) :flat))
+          (should (equal (mapcar (lambda (e) (plist-get e :id))
+                                 (plist-get (car (plist-get basemap :worktrees))
+                                            :entries))
+                         '("a" "b")))
+          ;; Sharing a start directory no longer merges two tmux sessions.
+          (should (plist-get agents :tmux))
+          (should-not (equal (rsr/agent-sessions--repo-key basemap)
+                             (rsr/agent-sessions--repo-key agents)))
+          ;; A git repo keeps its worktree rows.
+          (should-not (plist-get app :tmux))
+          (should-not (plist-get (car (plist-get app :worktrees)) :flat)))))))
+
+(ert-deftest rsr/agent-sessions-flat-worktree-has-no-heading ()
+  (with-temp-buffer
+    (rsr/agent-sessions-mode)
+    (let ((inhibit-read-only t))
+      (cl-letf (((symbol-function 'rsr/agent-sessions--insert-entries)
+                 (lambda (_) (insert "ROW\n"))))
+        (magit-insert-section (rsr/agent-sessions-root)
+          (rsr/agent-sessions--insert-worktree
+           (list :label "basemap" :path "/plans/" :flat t :entries nil))))
+      (should (equal (buffer-string) "ROW\n")))))
+
+(ert-deftest rsr/agent-sessions-list-opens-in-side-window ()
+  (let ((rsr/agent-sessions-display-side 'left)
+        (rsr/agent-sessions-window-width 45)
+        (rsr/agent-sessions-buffer-name "*agent-sessions-side-test*"))
+    (unwind-protect
+        (cl-letf (((symbol-function 'rsr/agent-sessions--refresh) #'ignore))
+          (rsr/agent-sessions-list)
+          (let ((win (get-buffer-window rsr/agent-sessions-buffer-name)))
+            (should win)
+            (should (eq (window-parameter win 'window-side) 'left))
+            (should (eq (selected-window) win))))
+      (when-let ((win (get-buffer-window rsr/agent-sessions-buffer-name)))
+        (delete-window win))
+      (kill-buffer rsr/agent-sessions-buffer-name))))
 
 (ert-deftest rsr/agent-orchestration-status-alone-does-not-steer-running-codex ()
   (let* ((id "terminal")
