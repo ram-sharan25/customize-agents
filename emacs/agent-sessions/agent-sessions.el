@@ -2161,6 +2161,16 @@ why a `sid == parent-sid' test must not go anywhere near that logic."
                                 rsr/agent-session--log-row))
           (setq-local rsr/agent-session--log-state state))))))
 
+(defun rsr/agent-sessions--log-title (buf)
+  "Write BUF's current title to its open session-log row now.
+The log otherwise learns a title only at the next hook event, so a session
+renamed with `t' and closed before its agent reported again would be offered
+by `R' under its old name.  Does nothing until a hook has given the row an
+agent identity: an earlier rename is picked up by that first hook anyway."
+  (with-current-buffer buf
+    (when-let ((state rsr/agent-session--log-state))
+      (rsr/agent-sessions--log-update buf (nth 1 state) (car state)))))
+
 (defun rsr/agent-sessions--log-end (buf)
   "Close BUF's current log row: its agent reported that it is exiting.
 The terminal itself lives on, and running an agent in it again opens a fresh
@@ -4821,6 +4831,7 @@ Clearing it (entering an empty string) restores the agent's live title."
         (with-current-buffer buf
           (setq-local rsr/agent-session-title-override
                       (unless (string-empty-p new) new)))
+        (rsr/agent-sessions--log-title buf)
         (rsr/agent-sessions--refresh)
         (message (if (string-empty-p new)
                      "Title override cleared."
@@ -5580,12 +5591,12 @@ session id are skipped — a bare terminal has nothing to resume, and `+' opens
 one anyway."
   (mapcar
    (lambda (r)
-     (pcase-let ((`(,sid ,type ,worktree ,label ,title ,closed ,reason) r))
-       (list :agent-sid sid :agent-type type :worktree worktree
+     (pcase-let ((`(,sid ,type ,worktree ,repo ,label ,title ,closed ,reason) r))
+       (list :agent-sid sid :agent-type type :worktree worktree :repo repo
              :label label :title title :closed-at closed :reason reason)))
    (sqlite-select
     (rsr/agent-sessions--db)
-    (concat "SELECT agent_sid, agent_type, worktree, label, title,
+    (concat "SELECT agent_sid, agent_type, worktree, repo, label, title,
                     MAX(closed_at) AS closed_at, close_reason
                FROM sessions
               WHERE agent_sid IS NOT NULL AND agent_type IS NOT NULL AND "
@@ -5593,13 +5604,71 @@ one anyway."
             " GROUP BY agent_sid ORDER BY closed_at DESC")
     args)))
 
-(defun rsr/agent-sessions--log-describe (row)
-  "A one-line label for session-log ROW, for completion or confirmation."
-  (format "%-28s %-7s %s"
-          (or (plist-get row :label) "?")
-          (or (plist-get row :agent-type) "?")
-          (or (plist-get row :title)
-              (substring (or (plist-get row :agent-sid) "?") 0 8))))
+(defface rsr/agent-session-restore-plans
+  '((t :foreground "#e0af68"))
+  "Face for a session's Plans folder in the `R' picker.")
+
+(defface rsr/agent-session-restore-code
+  '((t :foreground "#2ac3de"))
+  "Face for a session's code folders in the `R' picker.")
+
+(defun rsr/agent-sessions--log-row-session (row)
+  "A stand-in session for session-log ROW, for the per-session lookups.
+Notes, states and registered folders are keyed by `--session-note-keys', which
+for a session with no buffer is its agent session id alone — the key those
+were filed under while it ran."
+  (list :agent-session-id (plist-get row :agent-sid)))
+
+(defun rsr/agent-sessions--log-describe (row &optional label-width)
+  "A one-line label for session-log ROW, for completion or confirmation.
+LABEL-WIDTH pads the label column, default 28; see `--log-label-width'.
+Ends with the start of the agent session id, which both names an untitled
+session and keeps two sessions with the same label and title apart: the
+picker looks a choice up by this string, so a duplicate would hide one."
+  (let* ((sid (or (plist-get row :agent-sid) "?"))
+         (state (rsr/agent-sessions--session-state
+                 (rsr/agent-sessions--log-row-session row)))
+         (title (plist-get row :title)))
+    (concat (string-pad (or (plist-get row :label) "?") (or label-width 28))
+            " "
+            (format "%-7s " (or (plist-get row :agent-type) "?"))
+            (string-pad (if state
+                            (propertize state 'face
+                                        (rsr/agent-sessions--state-face state))
+                          "")
+                        13)
+            (or title (propertize "(no title)" 'face 'shadow))
+            "  "
+            (propertize (substring sid 0 (min 8 (length sid))) 'face 'shadow))))
+
+(defun rsr/agent-sessions--log-label-width (rows)
+  "The label column width that lines ROWS up: the longest label, at most 40."
+  (min 40 (apply #'max 1 (mapcar (lambda (r) (length (or (plist-get r :label) "?")))
+                                 rows))))
+
+(defun rsr/agent-sessions--log-details (row)
+  "What ROW's session was about: its Plans and code folders and its note.
+Each folder is shown by its last path component, Plans and code in their own
+faces; the note by its first line.  Empty when the session has none."
+  (let* ((session (rsr/agent-sessions--log-row-session row))
+         (name (lambda (path) (file-name-nondirectory (directory-file-name path))))
+         (plans (rsr/agent-sessions--session-folder-paths session "plans"))
+         (code (rsr/agent-sessions--session-folder-paths session "code"))
+         (note (cdr (rsr/agent-sessions--note-find
+                     (rsr/agent-sessions--session-note-keys session)))))
+    (mapconcat
+     #'identity
+     (delq nil
+           (list (and plans
+                      (propertize (concat "plans:" (funcall name (car (last plans))))
+                                  'face 'rsr/agent-session-restore-plans))
+                 (and code
+                      (propertize (concat "code:" (mapconcat name code ","))
+                                  'face 'rsr/agent-session-restore-code))
+                 (and note
+                      (propertize (car (split-string note "\n"))
+                                  'face 'rsr/agent-session-note))))
+     "  ")))
 
 (defun rsr/agent-sessions--log-annotate (row)
   "The trailing annotation for session-log ROW: when it ended, and how."
@@ -5628,16 +5697,27 @@ override preserves that label when the resumed agent emits fresh OSC titles."
   buf)
 
 (defun rsr/agent-sessions--never-saved-p (row)
-  "Non-nil when ROW is a Claude session with no saved conversation.
-Claude reports a session id at `SessionStart' but writes the transcript only
+  "Non-nil when ROW is a Claude or pi session with no saved conversation.
+Both report a session id when the TUI opens but write the session file only
 with the first prompt, so a session that was opened and never used is logged
 yet cannot be resumed: `claude --resume' just fails with \"No conversation
-found\"."
-  (and (equal (plist-get row :agent-type) "claude")
+found\".  Pi is only judged when its sessions directory exists, so a pi that
+keeps its sessions somewhere else is never mistaken for an unused one.  Codex
+is left alone: it reports its id on the first prompt, by which time its
+rollout file exists."
+  (let ((sid (plist-get row :agent-sid)))
+    (pcase (plist-get row :agent-type)
+      ("claude"
        (null (file-expand-wildcards
-              (expand-file-name (format "projects/*/%s.jsonl"
-                                        (plist-get row :agent-sid))
-                                (or (getenv "CLAUDE_CONFIG_DIR") "~/.claude"))))))
+              (expand-file-name (format "projects/*/%s.jsonl" sid)
+                                (or (getenv "CLAUDE_CONFIG_DIR") "~/.claude")))))
+      ("pi"
+       (let ((dir (expand-file-name "sessions"
+                                    (or (getenv "PI_CODING_AGENT_DIR")
+                                        "~/.pi/agent"))))
+         (and (file-directory-p dir)
+              (null (file-expand-wildcards
+                     (expand-file-name (format "*/*_%s.jsonl" sid) dir)))))))))
 
 (defun rsr/agent-sessions--restore-row (row)
   "Resume the session described by ROW, or jump to it if it is already open."
@@ -5653,7 +5733,8 @@ found\"."
      ((not (file-directory-p wt))
       (message "Worktree is gone: %s" wt))
      ((rsr/agent-sessions--never-saved-p row)
-      (message "Nothing to resume: that Claude session was never used."))
+      (message "Nothing to resume: that %s session was never used."
+               (plist-get row :agent-type)))
      (t
       ;; A tmux session outside git can't be derived from the folder; its
       ;; name is the row's label (see `rsr/agent-sessions--buffer-repo-info'),
@@ -5665,27 +5746,128 @@ found\"."
         (rsr/agent-sessions--restore-title
          (rsr/agent-session-start wt type sid) row))))))
 
+;;; The `R' picker
+
+(defvar rsr/agent-sessions--restore-filter-requested nil
+  "Non-nil when the `R' picker was left to change its repo filter.")
+
+(defun rsr/agent-sessions-restore-filter-repo ()
+  "Leave the `R' picker to narrow it to one repo, or to widen it again."
+  (interactive)
+  (setq rsr/agent-sessions--restore-filter-requested t)
+  (exit-minibuffer))
+
+(defvar rsr/agent-sessions-restore-minibuffer-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-c C-r") #'rsr/agent-sessions-restore-filter-repo)
+    map)
+  "Keys added to the minibuffer while `rsr/agent-sessions-restore' is reading.
+Layered over whatever map the completion UI installs, so it works under the
+default minibuffer and under Vertico alike.")
+
+(defun rsr/agent-sessions--log-row-repo (row)
+  "The repo name ROW is filed under in the `R' picker's repo filter.
+The repo root's name when the log has one; otherwise the label, which for a
+tmux session outside git is that session's name."
+  (let ((repo (plist-get row :repo)))
+    (if repo
+        (file-name-nondirectory (directory-file-name repo))
+      (or (plist-get row :label) "?"))))
+
+(defun rsr/agent-sessions--restore-candidate (row &optional label-width)
+  "The `R' picker's line for ROW: dimmed when there is nothing to resume.
+A never-used session stays listed rather than hidden, so the list still
+accounts for every session the log knows; choosing one says why it is empty."
+  (let ((line (rsr/agent-sessions--log-describe row label-width)))
+    (if (rsr/agent-sessions--never-saved-p row)
+        (propertize (substring-no-properties line) 'face 'shadow
+                    'rsr/agent-sessions-never-used t)
+      line)))
+
+(defun rsr/agent-sessions--restore-annotation (row never-used)
+  "The `R' picker's annotation for ROW: what it was about, then its ending."
+  (let ((details (rsr/agent-sessions--log-details row)))
+    (concat (if (string-empty-p details) "" (concat "  " details))
+            (rsr/agent-sessions--log-annotate row)
+            (if never-used (propertize ", never used" 'face 'shadow) ""))))
+
+(defun rsr/agent-sessions--restore-read (rows repo)
+  "Read one of ROWS in the minibuffer; REPO names an active filter, or nil.
+Returns the chosen row, the symbol `filter' when the user asked to change the
+repo filter, or nil.  Candidates keep the log's newest-first order: the table
+declares an identity sort, or a completion UI that sorts by history or length
+would scatter them."
+  (let* ((width (rsr/agent-sessions--log-label-width rows))
+         (table (mapcar (lambda (r)
+                          (cons (rsr/agent-sessions--restore-candidate r width) r))
+                        rows))
+         (collection
+          (lambda (string pred action)
+            (if (eq action 'metadata)
+                `(metadata
+                  (display-sort-function . identity)
+                  (cycle-sort-function . identity)
+                  (annotation-function
+                   . ,(lambda (k)
+                        (when-let ((cell (assoc k table)))
+                          (rsr/agent-sessions--restore-annotation
+                           (cdr cell)
+                           (get-text-property 0 'rsr/agent-sessions-never-used
+                                              (car cell)))))))
+              (complete-with-action action table string pred))))
+         (filter-key (substitute-command-keys
+                      "\\<rsr/agent-sessions-restore-minibuffer-map>\\[rsr/agent-sessions-restore-filter-repo]"))
+         (prompt (if repo
+                     (format "Restore session in %s (%s: all repos): " repo filter-key)
+                   (format "Restore session (%s: one repo): " filter-key)))
+         (choice
+          (progn
+            (setq rsr/agent-sessions--restore-filter-requested nil)
+            (minibuffer-with-setup-hook
+                (lambda ()
+                  (use-local-map (make-composed-keymap
+                                  rsr/agent-sessions-restore-minibuffer-map
+                                  (current-local-map))))
+              (completing-read prompt collection nil t)))))
+    (if rsr/agent-sessions--restore-filter-requested
+        'filter
+      (cdr (assoc choice table)))))
+
 ;;;###autoload
 (defun rsr/agent-sessions-restore ()
   "Resume a session that has ended, picked from the log.
-Lists every session the log knows the end of, most recently ended first,
-annotated with when and how it ended.  A session whose terminal is somehow
-still open is switched to rather than resumed twice, and one whose worktree
-has since been deleted says so instead of failing in a shell."
+Lists every session the log knows the end of, most recently ended first.  Each
+line shows the session's workflow state, title and the start of its agent
+session id; the annotation adds its Plans and code folders, its note, and when
+and how it ended.  Sessions with nothing to resume are dimmed.
+
+\\<rsr/agent-sessions-restore-minibuffer-map>\\[rsr/agent-sessions-restore-filter-repo] \
+narrows the list to one repo, and pressed again lists every
+repo; the list starts unfiltered.  A session whose terminal is
+somehow still open is switched to rather than resumed twice, and one whose
+worktree has since been deleted says so instead of failing in a shell."
   (interactive)
-  (let ((rows (rsr/agent-sessions--log-rows "closed_at IS NOT NULL")))
+  (let ((rows (rsr/agent-sessions--log-rows "closed_at IS NOT NULL"))
+        repo choice)
     (if (null rows)
         (message "No ended sessions in the log yet.")
-      (let* ((table (mapcar (lambda (r)
-                              (cons (rsr/agent-sessions--log-describe r) r))
-                            rows))
-             (completion-extra-properties
-              (list :annotation-function
-                    (lambda (k)
-                      (rsr/agent-sessions--log-annotate (cdr (assoc k table))))))
-             (choice (completing-read "Restore session: " table nil t)))
-        (when-let ((row (cdr (assoc choice table))))
-          (rsr/agent-sessions--restore-row row))))))
+      (while (eq 'filter
+                 (setq choice
+                       (rsr/agent-sessions--restore-read
+                        (if repo
+                            (seq-filter (lambda (r)
+                                          (equal repo (rsr/agent-sessions--log-row-repo r)))
+                                        rows)
+                          rows)
+                        repo)))
+        (setq repo
+              (unless repo
+                (completing-read
+                 "Only sessions from repo: "
+                 (seq-uniq (mapcar #'rsr/agent-sessions--log-row-repo rows))
+                 nil t))))
+      (when choice
+        (rsr/agent-sessions--restore-row choice)))))
 
 ;;;###autoload
 (defun rsr/agent-sessions-restore-previous ()
@@ -5726,8 +5908,9 @@ is spawned."
       (with-output-to-temp-buffer "*Agent Sessions Restore*"
         (princ (format "Sessions from the last Emacs (%s):\n\n"
                        (rsr/agent-sessions--log-annotate (car todo))))
-        (dolist (r todo)
-          (princ (concat "  " (rsr/agent-sessions--log-describe r) "\n")))
+        (let ((width (rsr/agent-sessions--log-label-width todo)))
+          (dolist (r todo)
+            (princ (concat "  " (rsr/agent-sessions--log-describe r width) "\n"))))
         (when live
           (princ (format "\nAlready open, will be skipped: %d\n" (length live))))
         (dolist (r gone)

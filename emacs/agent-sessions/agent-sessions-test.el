@@ -1737,10 +1737,143 @@ drops, so the list is rebuilt here from `aw-ignored-p' alone."
                    '(:agent-type "claude" :agent-sid "unused")))
           (should-not (rsr/agent-sessions--never-saved-p
                        '(:agent-type "claude" :agent-sid "used")))
-          ;; Only Claude defers its transcript; other agents are left alone.
+          ;; Codex reports its id only once its rollout exists, so it is
+          ;; left alone.
           (should-not (rsr/agent-sessions--never-saved-p
                        '(:agent-type "codex" :agent-sid "unused"))))
       (delete-directory dir t))))
+
+(ert-deftest rsr/agent-sessions-never-saved-pi-session-is-detected ()
+  "A pi session with no session file is never-used, but only when pi's
+sessions directory exists to say so."
+  (let* ((dir (make-temp-file "pi-agent-" t))
+         (process-environment (cons (format "PI_CODING_AGENT_DIR=%s" dir)
+                                    process-environment)))
+    (unwind-protect
+        (progn
+          (should-not (rsr/agent-sessions--never-saved-p
+                       '(:agent-type "pi" :agent-sid "unused")))
+          (make-directory (expand-file-name "sessions/--some-repo--" dir) t)
+          (write-region "" nil (expand-file-name
+                                "sessions/--some-repo--/2026-10-29T00-00-00-000Z_used.jsonl"
+                                dir))
+          (should (rsr/agent-sessions--never-saved-p
+                   '(:agent-type "pi" :agent-sid "unused")))
+          (should-not (rsr/agent-sessions--never-saved-p
+                       '(:agent-type "pi" :agent-sid "used"))))
+      (delete-directory dir t))))
+
+(defmacro rsr/agent-sessions-test--with-restore-log (rows &rest body)
+  "Run BODY against a temp database whose session log holds closed ROWS.
+Each row is (AGENT-SID TYPE LABEL TITLE REPO CLOSED-AT)."
+  (declare (indent 1) (debug t))
+  `(rsr/agent-sessions-test--with-temp-db
+     (let ((rsr/agent-sessions--states nil)
+           (rsr/agent-sessions--notes nil)
+           (rsr/agent-sessions--registered-folders nil))
+       (pcase-dolist (`(,sid ,type ,label ,title ,repo ,closed) ,rows)
+         (sqlite-execute
+          (rsr/agent-sessions--db)
+          "INSERT INTO sessions (emacs_sid, agent_type, agent_sid, worktree, repo,
+                                 label, title, opened_at, closed_at, close_reason)
+           VALUES ('1-1', ?, ?, '/tmp', ?, ?, ?, 0, ?, 'agent-exit')"
+          (list type sid repo label title closed)))
+       (cl-letf (((symbol-function 'rsr/agent-sessions--never-saved-p)
+                  (lambda (row) (equal (plist-get row :agent-sid) "unused-0"))))
+         ,@body))))
+
+(ert-deftest rsr/agent-sessions-title-edit-reaches-the-log-at-once ()
+  "`t' writes the new title to the log row without waiting for a hook."
+  (rsr/agent-sessions-test--with-temp-db
+    (let ((buf (generate-new-buffer " *title-log-test*")))
+      (unwind-protect
+          (cl-letf (((symbol-function 'rsr/agent-sessions--buffer-repo-info)
+                     (lambda (_) (list :worktree "repo" :worktree-path "/tmp/")))
+                    ((symbol-function 'rsr/agent-sessions--session-at-point)
+                     (lambda () (list :buffer buf)))
+                    ((symbol-function 'read-string) (lambda (&rest _) "My name"))
+                    ((symbol-function 'rsr/agent-sessions--refresh) #'ignore))
+            (with-current-buffer buf
+              (setq-local rsr/agent-session-id "1-1")
+              (setq-local rsr/agent-session-title "✳ Claude Code"))
+            (rsr/agent-sessions--log-update buf "claude" "sid-1")
+            (rsr/agent-sessions-edit-title)
+            (should (equal (caar (sqlite-select (rsr/agent-sessions--db)
+                                                "SELECT title FROM sessions"))
+                           "My name")))
+        (kill-buffer buf)))))
+
+(ert-deftest rsr/agent-sessions-restore-lines-tell-sessions-apart ()
+  "Same label and title still give two picker lines, each showing its state."
+  (rsr/agent-sessions-test--with-restore-log
+      '(("aaaaaaaa-1" "claude" "study" "plan-implementation" "/r/study/" 20)
+        ("bbbbbbbb-2" "claude" "study" "plan-implementation" "/r/study/" 10))
+    (rsr/agent-sessions--state-set '(("session" "bbbbbbbb-2")) "PLAN-REVIEW")
+    (let* ((rows (rsr/agent-sessions--log-rows "closed_at IS NOT NULL"))
+           (lines (mapcar #'rsr/agent-sessions--log-describe rows)))
+      (should (equal (mapcar (lambda (r) (plist-get r :agent-sid)) rows)
+                     '("aaaaaaaa-1" "bbbbbbbb-2")))
+      (should (= 2 (length (seq-uniq lines))))
+      (should (string-match-p "aaaaaaaa" (nth 0 lines)))
+      (should (string-match-p "PLAN-REVIEW +plan-implementation +bbbbbbbb"
+                              (nth 1 lines))))))
+
+(ert-deftest rsr/agent-sessions-restore-details-show-folders-and-note ()
+  "The annotation names the Plans and code folders in their faces, and the note."
+  (rsr/agent-sessions-test--with-restore-log
+      '(("s1" "claude" "repo" "title" "/r/repo/" 10))
+    (let ((session (list :agent-session-id "s1")))
+      (rsr/agent-sessions--register-folder session "plans" "/p/Plans/my-task/")
+      (rsr/agent-sessions--register-folder session "code" "/c/repo-a/")
+      (rsr/agent-sessions--register-folder session "code" "/c/repo-b")
+      (rsr/agent-sessions--note-set '(("session" "s1")) "first line\nsecond"))
+    (let ((details (rsr/agent-sessions--log-details
+                    (car (rsr/agent-sessions--log-rows "closed_at IS NOT NULL")))))
+      (should (equal (substring-no-properties details)
+                     "plans:my-task  code:repo-a,repo-b  first line"))
+      (should (eq (get-text-property 0 'face details)
+                  'rsr/agent-session-restore-plans))
+      (should (eq (get-text-property (string-search "code:" details) 'face details)
+                  'rsr/agent-session-restore-code)))
+    (should (equal (rsr/agent-sessions--log-details
+                    (list :agent-sid "nothing-attached"))
+                   ""))))
+
+(ert-deftest rsr/agent-sessions-restore-dims-never-used-and-filters-by-repo ()
+  "Never-used rows are dimmed but listed; the filter key narrows to one repo
+and pressing it again widens back to every repo."
+  (rsr/agent-sessions-test--with-restore-log
+      '(("used-1" "claude" "alpha" "a" "/r/alpha/" 30)
+        ("unused-0" "claude" "alpha" nil "/r/alpha/" 20)
+        ("used-2" "claude" "beta (wt)" "b" "/r/beta/" 10))
+    (let ((rows (rsr/agent-sessions--log-rows "closed_at IS NOT NULL")))
+      (should (eq 'shadow (get-text-property
+                           0 'face (rsr/agent-sessions--restore-candidate
+                                    (nth 1 rows)))))
+      (should-not (eq 'shadow (get-text-property
+                               0 'face (rsr/agent-sessions--restore-candidate
+                                        (nth 0 rows))))))
+    (let ((answers (list 'filter "beta" 'filter 'filter "alpha" "used-1"))
+          seen restored)
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (prompt collection &rest _)
+                   (let ((answer (pop answers)))
+                     (if (eq answer 'filter)
+                         (progn (setq rsr/agent-sessions--restore-filter-requested t) "")
+                       (if (functionp collection)
+                           (progn
+                             (push (cons prompt (all-completions "" collection)) seen)
+                             (seq-find (lambda (c) (string-match-p answer c))
+                                       (all-completions "" collection)))
+                         answer)))))
+                ((symbol-function 'rsr/agent-sessions--restore-row)
+                 (lambda (row) (setq restored row))))
+        (rsr/agent-sessions-restore))
+      (should (equal (plist-get restored :agent-sid) "used-1"))
+      ;; The last picker shown was filtered to alpha: both alpha rows, no beta.
+      (let ((last (car seen)))
+        (should (string-match-p "in alpha" (car last)))
+        (should (= 2 (length (cdr last))))))))
 
 (ert-deftest rsr/agent-sessions-switch-project-prompt-works-on-this-emacs ()
   "RET on a heading builds the project menu prompt without a void function.
