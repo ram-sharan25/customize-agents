@@ -1146,7 +1146,7 @@ terminal's registry entry afterwards."
                   ((symbol-function 'rsr/agent-sessions--refresh-if-visible)
                    (lambda () (push '(refresh) events)))
                   ((symbol-function 'pop-to-buffer)
-                   (lambda (shown) (push (list 'pop shown) events))))
+                   (lambda (shown &rest _) (push (list 'pop shown) events))))
           (rsr/agent-sessions-show-file-submission-diff)
           (should
            (equal

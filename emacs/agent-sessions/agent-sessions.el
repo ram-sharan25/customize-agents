@@ -3757,8 +3757,11 @@ Git repository or has no committed history, leave its unread state unchanged."
          (user-error "File is not in a Git repository"))
        (unless commit
          (user-error "File has no committed diff"))
-       (magit-show-commit commit (car (magit-show-commit--arguments))
-                          (list relative))
+       ;; Magit shows a diff with `display-buffer''s default, which splits
+       ;; the window beside the side-window dashboard; replace it instead.
+       (let ((display-buffer-overriding-action rsr/agent-tmux-other-window-action))
+         (magit-show-commit commit (car (magit-show-commit--arguments))
+                            (list relative)))
        (when (rsr/agent-sessions--set-visited
               (lambda (file) (equal (plist-get file :path) path)) t)
          (rsr/agent-sessions--refresh-if-visible))))
@@ -3800,7 +3803,7 @@ produced."
              (when (rsr/agent-sessions--set-visited
                     (lambda (file) (equal (plist-get file :path) path)) t)
                (rsr/agent-sessions--refresh-if-visible))
-             (pop-to-buffer buffer))))))
+             (pop-to-buffer buffer rsr/agent-tmux-other-window-action))))))
     (_ (message "No shared file at point."))))
 
 (defface rsr/agent-session-file-unvisited

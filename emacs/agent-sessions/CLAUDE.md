@@ -61,7 +61,8 @@ replaces the window beside the dashboard. Called from an ordinary window with
 no other beside it (a notification click, an Org link, a new terminal), its
 `inhibit-same-window` left nothing usable and Emacs split; the selected window
 is used then, and also when it already shows the buffer (otherwise a second
-copy appeared beside it).
+copy appeared beside it). `d` and `D` use the same action, since Magit's and
+`pop-to-buffer`'s defaults split.
 
 **The per-buffer id is the identity, not the agent's own session id.** Sessions
 sharing a worktree must still resolve to the right buffer, and the agent's own
