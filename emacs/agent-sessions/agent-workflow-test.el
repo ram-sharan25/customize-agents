@@ -122,6 +122,28 @@
             (should (equal (reverse opened)
                            (list (list 'magit code) (list 'dired plans))))))))))
 
+(ert-deftest rsr/agent-workflow-open-folder-leaves-side-window ()
+  "From a side-window dashboard, the folder opens in the window beside it."
+  (rsr/agent-workflow-test--with-db
+    (let ((session (list :agent-session-id "thread-o2"))
+          (code (file-name-as-directory (make-temp-file "code-" t)))
+          (main (selected-window))
+          side opened-in)
+      (save-window-excursion
+        (setq side (display-buffer-in-side-window
+                    (get-buffer-create " *agent-workflow-side-test*")
+                    '((side . left) (slot . 0))))
+        (select-window side)
+        (rsr/agent-sessions--register-folder session "code" code)
+        (cl-letf (((symbol-function 'rsr/agent-sessions--session-for-id)
+                   (lambda (_) session))
+                  ((symbol-function 'magit-status)
+                   (lambda (&rest _) (setq opened-in (selected-window)))))
+          (rsr/agent-workflow-test--at-section 'rsr/agent-session-row "t-o2"
+            (rsr/agent-workflow-open-folder "code"))))
+      (should (eq opened-in main))
+      (should-not (eq opened-in side)))))
+
 (ert-deftest rsr/agent-workflow-open-menu-reads-one-key ()
   (let (asked)
     (cl-letf (((symbol-function 'read-char-choice)

@@ -313,10 +313,21 @@ empty."
               (seq-filter #'file-directory-p
                           (rsr/agent-sessions--session-folder-paths session kind))))))))
 
+(defun rsr/agent-workflow--select-main-window ()
+  "Leave the dashboard's side window for the window beside it.
+A side window is dedicated, so magit and dired cannot show a buffer in it and
+split the window beside it instead.  Selecting that window first lets them
+replace what it shows.  An ordinary dashboard window is left selected."
+  (when (window-parameter nil 'window-side)
+    (let ((main (or (get-mru-window nil nil t) (window-main-window))))
+      (when (window-live-p main)
+        (select-window main)))))
+
 (defun rsr/agent-workflow-open-folder (kind)
   "Open the KIND folder of the thing at point: code in magit, plans in dired.
 With several code folders (a task spanning repositories), ask which one; never
-pick for the user.  With none, say so and open nothing."
+pick for the user.  With none, say so and open nothing.  From the side-window
+dashboard the folder replaces the window beside it rather than splitting it."
   (let* ((dirs (rsr/agent-workflow--folders-at-point kind))
          (dir (if (cdr dirs)
                   (completing-read (format "Open which %s folder? " kind) dirs nil t)
@@ -325,8 +336,12 @@ pick for the user.  With none, say so and open nothing."
      ((null dir)
       (message "No %s folder known here (a workflow stage registers it with `emacs-share folder %s')"
                (if (equal kind "code") "code" "Plans") kind))
-     ((equal kind "code") (magit-status dir))
-     (t (dired dir)))))
+     ((equal kind "code")
+      (rsr/agent-workflow--select-main-window)
+      (magit-status dir))
+     (t
+      (rsr/agent-workflow--select-main-window)
+      (dired dir)))))
 
 (defun rsr/agent-workflow-open-menu ()
   "Open the code (`c', in magit) or Plans folder (`p', in dired) at point."
