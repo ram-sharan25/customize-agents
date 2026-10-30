@@ -56,6 +56,27 @@ it, never inside it; and the composer checks read the window with
 `capture-pane -e`, turning faint runs into a face so inline completions still
 read as not-a-draft.
 
+**Two agents of one repo on screen need a view, and only `o` makes one.**
+`*tmux: S*` shows one tmux window at a time, so "opening" a second agent of
+S switches it. `o` (whose point is to see two at once) instead attaches a
+second terminal, `*tmux: S @N*`, to `S~view-N`: a session of its own with
+window @N linked into it (`link-window`), so S's current window is left
+alone. RET, notifications and `v` still switch `*tmux: S*`, as they always
+did; any of them goes to a terminal already on screen showing the agent
+rather than switching another to it. **A view must not be a grouped session**
+(`new-session -t S`), the obvious way to share S's windows: on tmux 3.7, any
+grouped session on the server stops prefix-s (`choose-tree -s`) opening in
+every other session, Ghostty included. Views were grouped at first; one
+found grouped is replaced. tmux runs the cleanup: the attaching client sets
+`destroy-unattached on` on the view (set any earlier and tmux destroys it
+while it has no client), so killing the terminal destroys the view and
+leaves S and @N alone, and the view dies with @N, its only window; a closed
+agent's proxy kills its view terminal. Views are filtered from
+`rsr/agent-tmux-sessions` and reattach (`~` never occurs in a sanitised
+name). Which window a terminal shows comes from `list-clients`:
+`display-message -c TTY` expands in the most recently used session, so it
+named the wrong window as soon as two clients were attached.
+
 **Opening never splits behind your back.** `rsr/agent-tmux-other-window-action`
 replaces the window beside the dashboard. Called from an ordinary window with
 no other beside it (a notification click, an Org link, a new terminal), its

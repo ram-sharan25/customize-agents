@@ -5,6 +5,9 @@
 ;; Agents run as windows in a per-repository tmux session on the user's normal
 ;; tmux server, so a session can be attached from Emacs, Ghostty or anywhere
 ;; else.  Emacs shows each session through one ghostel buffer, *tmux: NAME*.
+;; Seeing a second agent of the same session at once (the dashboard's `o')
+;; takes a second terminal, *tmux: NAME @N*, attached to a view: a session
+;; NAME~view-N with window @N linked into it, so it has its own current window.
 ;;
 ;; agent-sessions identifies a session by an Emacs buffer and keeps its state in
 ;; buffer-local variables.  A tmux agent has no buffer of its own, so it gets a
@@ -102,9 +105,18 @@ Return (STATUS . OUTPUT); STATUS is -1 when tmux could not be run."
   (replace-regexp-in-string "[.: ]" "-" string))
 
 (defun rsr/agent-tmux-sessions ()
-  "Names of the running tmux sessions."
+  "Names of the running tmux sessions, views left out."
   (when-let ((out (rsr/agent-tmux--output "list-sessions" "-F" "#{session_name}")))
-    (split-string out "\n" t)))
+    (seq-remove #'rsr/agent-tmux-view-session-p (split-string out "\n" t))))
+
+(defun rsr/agent-tmux-view-session (session window)
+  "The name of the view of SESSION that `rsr/agent-tmux-show-view' keeps on WINDOW.
+`~' never occurs in a name from `rsr/agent-tmux-session-name'."
+  (concat session "~view-" (string-remove-prefix "@" window)))
+
+(defun rsr/agent-tmux-view-session-p (name)
+  "Non-nil when tmux session NAME is a view (`rsr/agent-tmux-view-session')."
+  (string-match-p "~view-[0-9]+\\'" name))
 
 (defvar rsr/agent-tmux--target nil
   "When non-nil, a (SESSION . DIRECTORY) that `rsr/agent-tmux-target' returns.
@@ -213,12 +225,13 @@ beside it, or split it.  The dashboard's side window is never used."
                    (not (get-mru-window nil nil t))))
       (window--display-buffer buffer window 'reuse alist))))
 
-(defun rsr/agent-tmux-show (session dir &optional display)
-  "Show SESSION in its ghostel buffer, attaching to it as needed.
-A session that doesn't exist yet is created in DIR.  With DISPLAY non-nil,
-display the buffer without selecting it.  Return the buffer."
+(defun rsr/agent-tmux--show-terminal (name session dir display attach)
+  "Show ghostel buffer NAME attached to tmux SESSION, running tmux ATTACH if not.
+ATTACH is the tmux argument list that attaches a client.  A buffer whose
+client is still running is only shown.  DIR is the buffer's directory; with
+DISPLAY non-nil, display it without selecting it.  Return the buffer."
   (require 'ghostel)
-  (let ((buffer (get-buffer-create (format "*tmux: %s*" session))))
+  (let ((buffer (get-buffer-create name)))
     (if display
         (display-buffer buffer rsr/agent-tmux-other-window-action)
       (pop-to-buffer buffer rsr/agent-tmux-other-window-action))
@@ -226,13 +239,93 @@ display the buffer without selecting it.  Return the buffer."
       (unless (process-live-p ghostel--process)
         (setq default-directory (file-name-as-directory dir))
         (ghostel-exec buffer (executable-find rsr/agent-tmux-program)
-                      (append (rsr/agent-tmux--socket-args)
-                              (list "new-session" "-A" "-s" session "-c" dir))))
+                      (append (rsr/agent-tmux--socket-args) attach)))
       ;; After `ghostel-exec', whose mode change resets buffer-local values.
       (when rsr/agent-tmux-hide-mode-line
         (setq-local mode-line-format nil))
       (setq-local rsr/agent-tmux-session session))
     buffer))
+
+(defun rsr/agent-tmux-show (session dir &optional display)
+  "Show SESSION in its ghostel buffer, attaching to it as needed.
+A session that doesn't exist yet is created in DIR.  With DISPLAY non-nil,
+display the buffer without selecting it.  Return the buffer."
+  (rsr/agent-tmux--show-terminal (format "*tmux: %s*" session) session dir display
+                                 (list "new-session" "-A" "-s" session "-c" dir)))
+
+(defun rsr/agent-tmux-view-buffer-name (session window)
+  "The name of the buffer `rsr/agent-tmux-show-view' shows WINDOW of SESSION in."
+  (format "*tmux: %s %s*" session window))
+
+(defun rsr/agent-tmux--make-view (view window dir)
+  "Create session VIEW holding only WINDOW, linked from its own session.
+A new session comes with a window of its own; it runs `sleep' rather than
+the user's shell, and is closed once WINDOW is linked in."
+  (let ((target (concat "=" view ":")))
+    (rsr/agent-tmux--ok "new-session" "-d" "-s" view "-c" dir "sleep" "86400")
+    (let ((placeholder (rsr/agent-tmux--output "display-message" "-p" "-t" target
+                                               "#{window_id}")))
+      (rsr/agent-tmux--ok "link-window" "-d" "-s" window "-t" target)
+      (when placeholder
+        (rsr/agent-tmux--ok "kill-window" "-t" placeholder)))))
+
+(defun rsr/agent-tmux-show-view (session window dir &optional display)
+  "Show WINDOW of SESSION in a terminal of its own, *tmux: SESSION WINDOW*.
+*tmux: SESSION* can show one window at a time, so a second agent of the same
+session is shown through a view: a session of its own with WINDOW linked
+into it.  It is not a grouped session (`new-session -t'), though that would
+need no linking: on tmux 3.7 any grouped session on the server stops
+`choose-tree -s' (prefix s) opening for every other session, so a view from
+an earlier version that is grouped is replaced.  The view is destroyed when
+its terminal's client goes (`destroy-unattached on'), leaving SESSION and
+WINDOW alone, and when WINDOW closes, having no other window.  The option is
+set after the client attaches, as a session with it is destroyed once it has
+no client.  DIR and DISPLAY are as in `rsr/agent-tmux-show'.  Return the
+buffer."
+  (let* ((view (rsr/agent-tmux-view-session session window))
+         (target (concat "=" view ":"))
+         (name (rsr/agent-tmux-view-buffer-name session window)))
+    ;; `has-session', not `display-message': tmux 3.7 answers the latter for a
+    ;; missing session with success and no output.
+    (cond
+     ((not (rsr/agent-tmux--ok "has-session" "-t" target))
+      (rsr/agent-tmux--make-view view window dir))
+     ((equal (rsr/agent-tmux--output "display-message" "-p" "-t" target
+                                     "#{session_grouped}")
+             "1")
+      (when-let ((old (get-buffer name)))
+        (let ((kill-buffer-query-functions nil)) (kill-buffer old)))
+      (rsr/agent-tmux--ok "kill-session" "-t" target)
+      (rsr/agent-tmux--make-view view window dir)))
+    (rsr/agent-tmux--ok "select-window" "-t" (concat target window))
+    (let ((buffer (rsr/agent-tmux--show-terminal
+                   name view dir display
+                   (list "attach-session" "-t" target
+                         ";" "set-option" "-t" target "destroy-unattached" "on"))))
+      (with-current-buffer buffer
+        (setq-local rsr/agent-tmux-view-terminal t))
+      buffer)))
+
+(defvar-local rsr/agent-tmux-view-terminal nil
+  "Non-nil in a terminal made by `rsr/agent-tmux-show-view'.")
+
+(defun rsr/agent-tmux-kill-hidden-views ()
+  "Kill each view terminal no window shows.
+A view is only there to be seen beside its session's terminal, so closing its
+last window kills it: its client goes, and `destroy-unattached' then removes
+the view session, leaving the agent's window alone."
+  (let ((kill-buffer-query-functions nil))
+    (dolist (buffer (buffer-list))
+      (when (and (buffer-local-value 'rsr/agent-tmux-view-terminal buffer)
+                 (not (get-buffer-window buffer t)))
+        (kill-buffer buffer)))))
+
+(defun rsr/agent-tmux--kill-hidden-views-soon (&rest _)
+  "Run `rsr/agent-tmux-kill-hidden-views' once redisplay is done.
+For `window-buffer-change-functions', which runs during redisplay."
+  (run-at-time 0 nil #'rsr/agent-tmux-kill-hidden-views))
+
+(add-hook 'window-buffer-change-functions #'rsr/agent-tmux--kill-hidden-views-soon)
 
 (defun rsr/agent-tmux-active-window (session)
   "The id of SESSION's current window, or nil."
@@ -259,9 +352,15 @@ therefore address the client, not the session."
              return tty)))
 
 (defun rsr/agent-tmux-client-window (buffer)
-  "The window the tmux client in ghostel BUFFER is showing, or nil."
-  (when-let ((tty (rsr/agent-tmux-client buffer)))
-    (rsr/agent-tmux--output "display-message" "-p" "-c" tty "#{window_id}")))
+  "The window the tmux client in ghostel BUFFER is showing, or nil.
+Read from `list-clients': `display-message -c TTY' expands its format in the
+most recently used session, not in the one that client shows."
+  (when-let ((tty (rsr/agent-tmux-client buffer))
+             (out (rsr/agent-tmux--output "list-clients" "-F"
+                                          "#{client_tty}\t#{window_id}")))
+    (cl-loop for line in (split-string out "\n" t)
+             for (client-tty window) = (split-string line "\t")
+             when (equal client-tty tty) return window)))
 
 ;;; Windows
 
@@ -404,7 +503,8 @@ when that can be read; any other window is left out."
       (dolist (line (split-string out "\n" t))
         (pcase (split-string line "\t")
           (`(,win ,session ,pid ,dir ,tag ,log-tag)
-           (unless (member win seen)
+           ;; A view lists the window it links too; the window is the base's.
+           (unless (or (member win seen) (rsr/agent-tmux-view-session-p session))
              (push win seen)
              (when-let ((id (if (string-empty-p tag)
                                 (rsr/agent-tmux--pane-env-id (string-to-number pid))
@@ -498,22 +598,56 @@ Return non-nil when the screen could be read."
         (delete-region (line-end-position) (point-max)))
       t)))
 
+(defvar rsr/agent-tmux-own-view nil
+  "Non-nil to give a proxy's window a terminal of its own when need be.
+That is when its session's terminal is on screen showing another window:
+rather than switch that terminal, `rsr/agent-tmux-show-proxy' opens a view
+\(`rsr/agent-tmux-show-view').  Bound by the dashboard's `o', which is for
+seeing two agents at once.")
+
+(defun rsr/agent-tmux--terminal-showing (window)
+  "A terminal on screen whose tmux client shows WINDOW, or nil.
+A client not found (still attaching, say) counts as showing its session's
+current window, as in `rsr/agent-tmux--fresh-active-window'."
+  (seq-find (lambda (b)
+              (let ((session (buffer-local-value 'rsr/agent-tmux-session b)))
+                (and session
+                     (not (rsr/agent-tmux-proxy-p b))
+                     (get-buffer-window b)
+                     (equal (or (rsr/agent-tmux-client-window b)
+                                (rsr/agent-tmux-active-window session))
+                            window))))
+            (buffer-list)))
+
 (defun rsr/agent-tmux-show-proxy (&optional buffer display)
   "Show the tmux window behind proxy BUFFER (default current).
-With DISPLAY non-nil, display the session buffer without selecting it."
+With DISPLAY non-nil, display the session buffer without selecting it.
+A terminal already on screen showing the window is used as it is, so a view
+`o' opened is gone back to rather than its window switched to elsewhere."
   (interactive)
   (with-current-buffer (or buffer (current-buffer))
     (let* ((session rsr/agent-tmux-session)
            (window rsr/agent-tmux-window)
            (dir default-directory)
-           ;; Selecting the window covers a client that is about to attach;
-           ;; one already attached may be on another session by now, so it
-           ;; is switched to the window as well.
-           (shown (progn (rsr/agent-tmux-select-window window)
-                         (rsr/agent-tmux-show session dir display))))
-      (when-let ((tty (rsr/agent-tmux-client shown)))
-        (rsr/agent-tmux--ok "switch-client" "-c" tty "-t" window))
-      shown)))
+           (main (rsr/agent-tmux-session-buffer session))
+           (here (rsr/agent-tmux--terminal-showing window)))
+      (cond
+       (here
+        (if display
+            (display-buffer here rsr/agent-tmux-other-window-action)
+          (pop-to-buffer here rsr/agent-tmux-other-window-action))
+        here)
+       ((and rsr/agent-tmux-own-view main (get-buffer-window main))
+        (rsr/agent-tmux-show-view session window dir display))
+       (t
+        ;; Selecting the window covers a client that is about to attach;
+        ;; one already attached may be on another session by now, so it
+        ;; is switched to the window as well.
+        (let ((shown (progn (rsr/agent-tmux-select-window window)
+                            (rsr/agent-tmux-show session dir display))))
+          (when-let ((tty (rsr/agent-tmux-client shown)))
+            (rsr/agent-tmux--ok "switch-client" "-c" tty "-t" window))
+          shown))))))
 
 (defun rsr/agent-tmux-window-of (buffer)
   "For the ghostel buffer attached to a session, its active window's proxy.
@@ -561,7 +695,17 @@ Falls back to SESSION's current window when the client can't be found."
                            rsr/agent-tmux-window rsr/agent-tmux-session))))
 
 (defun rsr/agent-tmux--kill-window-on-kill ()
-  "Close the proxy's window when the proxy is killed, unless it already closed."
+  "Close the proxy's window when the proxy is killed, unless it already closed.
+Its view terminal goes too: with the window gone the view would show another.
+Each window showing it is quit, so one made for it closes and one it took
+over gets its old buffer back, instead of showing some other buffer."
+  (when-let ((view (get-buffer (rsr/agent-tmux-view-buffer-name
+                                rsr/agent-tmux-session rsr/agent-tmux-window))))
+    (let ((kill-buffer-query-functions nil))
+      (dolist (window (get-buffer-window-list view nil t))
+        (quit-restore-window window 'kill))
+      (when (buffer-live-p view)
+        (kill-buffer view))))
   (unless rsr/agent-tmux--window-gone
     (rsr/agent-tmux-kill-window rsr/agent-tmux-window)
     (rsr/agent-tmux-forget-panes)))

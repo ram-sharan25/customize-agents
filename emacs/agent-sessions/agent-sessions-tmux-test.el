@@ -325,6 +325,196 @@ inside tmux; selecting the window in S alone would leave it there."
       (should (equal (caar (rsr/agent-tmux-test--called "kill-window"))
                      '("kill-window" "-t" "@7"))))))
 
+;;; Which window a terminal shows, and views
+
+(defun rsr/agent-tmux-test--clients (args)
+  "A `list-clients' answer for ARGS: tty 1 on @3 (pid 111), tty 9 on @7 (pid 4242)."
+  (if (string-match-p "window_id" (car (last args)))
+      "/dev/ttys001\t@3\n/dev/ttys009\t@7\n"
+    "111\t/dev/ttys001\n4242\t/dev/ttys009\n"))
+
+(defmacro rsr/agent-tmux-test--with-terminal (name pid &rest body)
+  "Run BODY with `term' a buffer NAME, standing in for a ghostel client PID."
+  (declare (indent 2))
+  `(let ((term (get-buffer-create ,name)))
+     (unwind-protect
+         (progn (with-current-buffer term
+                  (setq-local ghostel--pid ,pid)
+                  (setq-local rsr/agent-tmux-session "test"))
+                ,@body)
+       (kill-buffer term))))
+
+(ert-deftest rsr/agent-tmux-client-window-reads-the-clients-own-window ()
+  "Not `display-message -c', which answers from the most recent session."
+  (rsr/agent-tmux-test--with-fake
+      (lambda (args)
+        (pcase (car args)
+          ("list-clients" (rsr/agent-tmux-test--clients args))
+          ("display-message" "@99")
+          (_ "")))
+    (rsr/agent-tmux-test--with-terminal " *tmux: a*" 4242
+      (should (equal (rsr/agent-tmux-client-window term) "@7")))
+    (rsr/agent-tmux-test--with-terminal " *tmux: b*" 111
+      (should (equal (rsr/agent-tmux-client-window term) "@3")))))
+
+(ert-deftest rsr/agent-tmux-views-are-not-sessions-to-offer ()
+  (should (equal (rsr/agent-tmux-view-session "app" "@12") "app~view-12"))
+  (should (rsr/agent-tmux-view-session-p "app~view-12"))
+  (should-not (rsr/agent-tmux-view-session-p "app-view-12"))
+  (rsr/agent-tmux-test--with-fake
+      (lambda (args)
+        (if (equal (car args) "list-sessions") "app\napp~view-12\nlib\n" ""))
+    (should (equal (rsr/agent-tmux-sessions) '("app" "lib")))))
+
+(ert-deftest rsr/agent-tmux-reattach-sees-a-window-under-its-own-session ()
+  "A view lists the window it links too; the window belongs to the base session."
+  (rsr/agent-tmux-test--with-fake
+      (lambda (args)
+        (if (equal (car args) "list-panes")
+            (concat "@7\tapp~view-7\t4242\t/w\tid-1\tid-1\n"
+                    "@7\tapp\t4242\t/w\tid-1\tid-1\n")
+          ""))
+    (should (equal (mapcar (lambda (w) (plist-get w :session))
+                           (rsr/agent-tmux-agent-windows))
+                   '("app")))))
+
+(defvar rsr/agent-tmux-test--view-grouped nil
+  "The view's `session_grouped' as tmux would report it; nil for no view.")
+
+(defmacro rsr/agent-tmux-test--showing (own-view main-pid &rest body)
+  "Run BODY after showing a proxy for @7 of session test, with OWN-VIEW bound.
+*tmux: test* is on screen; its client is on @3 when MAIN-PID is 111, on @7
+when 4242.  A new session's first window is @50.  `shown' records how a
+terminal was opened: (NAME SESSION ATTACH)."
+  (declare (indent 2))
+  `(rsr/agent-tmux-test--with-fake
+       (lambda (args)
+         (pcase (cons (car args) (car (last args)))
+           (`("list-clients" . ,_) (rsr/agent-tmux-test--clients args))
+           (`("has-session" . ,_) (and rsr/agent-tmux-test--view-grouped ""))
+           ('("display-message" . "#{session_grouped}") rsr/agent-tmux-test--view-grouped)
+           ('("display-message" . "#{window_id}") "@50")
+           (_ "")))
+     (let ((proxy (rsr/agent-tmux-make-proxy " proxy" "test" "@7" default-directory))
+           (rsr/agent-tmux-own-view ,own-view)
+           shown)
+       (unwind-protect
+           (rsr/agent-tmux-test--with-terminal "*tmux: test*" ,main-pid
+             (save-window-excursion
+               (delete-other-windows)
+               (switch-to-buffer term)
+               (cl-letf (((symbol-function 'rsr/agent-tmux--show-terminal)
+                          (lambda (name session _dir _display attach)
+                            (setq shown (list name session attach))
+                            (get-buffer-create name)))
+                         ;; `--with-fake' stubs this out; record it instead.
+                         ((symbol-function 'rsr/agent-tmux-show)
+                          (lambda (session &rest _)
+                            (setq shown (list (format "*tmux: %s*" session) session))
+                            nil)))
+                 (setq rsr/agent-tmux-test--calls nil)
+                 (rsr/agent-tmux-show-proxy proxy))
+               ,@body))
+         (with-current-buffer proxy (setq rsr/agent-tmux--window-gone t))
+         (let ((kill-buffer-query-functions nil)) (kill-buffer proxy))))))
+
+(defun rsr/agent-tmux-test--called-names ()
+  "The tmux subcommands called, in order."
+  (mapcar #'caar rsr/agent-tmux-test--calls))
+
+(ert-deftest rsr/agent-tmux-own-view-opens-a-view-beside-another-window ()
+  "`o' on @7 while *tmux: test* shows @3: a view holding @7, *tmux: test @7*."
+  (let ((rsr/agent-tmux-test--view-grouped nil))
+    (rsr/agent-tmux-test--showing t 111
+      (should (equal (car shown) "*tmux: test @7*"))
+      (should (equal (cadr shown) "test~view-7"))
+      ;; Not grouped (no -t): a grouped session breaks prefix-s on tmux 3.7.
+      (should (equal (car (rsr/agent-tmux-test--called "new-session"))
+                     `(("new-session" "-d" "-s" "test~view-7"
+                        "-c" ,(file-name-as-directory default-directory)
+                        "sleep" "86400"))))
+      (should (equal (car (rsr/agent-tmux-test--called "link-window"))
+                     '(("link-window" "-d" "-s" "@7" "-t" "=test~view-7:"))))
+      (should (equal (car (rsr/agent-tmux-test--called "kill-window"))
+                     '(("kill-window" "-t" "@50"))))
+      (should (equal (car (rsr/agent-tmux-test--called "select-window"))
+                     '(("select-window" "-t" "=test~view-7:@7"))))
+      ;; destroy-unattached is set by the attaching client, after it attaches.
+      (should (equal (nth 2 shown)
+                     '("attach-session" "-t" "=test~view-7:" ";" "set-option" "-t"
+                       "=test~view-7:" "destroy-unattached" "on"))))))
+
+(ert-deftest rsr/agent-tmux-own-view-reuses-a-view ()
+  (let ((rsr/agent-tmux-test--view-grouped "0"))
+    (rsr/agent-tmux-test--showing t 111
+      (should (equal (car shown) "*tmux: test @7*"))
+      (should-not (rsr/agent-tmux-test--called "new-session"))
+      (should-not (rsr/agent-tmux-test--called "kill-session")))))
+
+(ert-deftest rsr/agent-tmux-a-view-no-window-shows-is-killed ()
+  "Closing a view terminal's last window kills it; one on screen stays."
+  (let ((rsr/agent-tmux-test--view-grouped "0"))
+    (rsr/agent-tmux-test--showing t 111
+      (let ((view (get-buffer "*tmux: test @7*")))
+        (should (buffer-local-value 'rsr/agent-tmux-view-terminal view))
+        (save-window-excursion
+          (switch-to-buffer view)
+          (rsr/agent-tmux-kill-hidden-views)
+          (should (buffer-live-p view)))
+        (rsr/agent-tmux-kill-hidden-views)
+        (should-not (buffer-live-p view))))))
+
+(ert-deftest rsr/agent-tmux-own-view-replaces-a-grouped-view ()
+  "A view an earlier version made grouped is killed and remade linked."
+  (let ((rsr/agent-tmux-test--view-grouped "1"))
+    (rsr/agent-tmux-test--showing t 111
+      (should (equal (car (rsr/agent-tmux-test--called "kill-session"))
+                     '(("kill-session" "-t" "=test~view-7:"))))
+      (let ((names (rsr/agent-tmux-test--called-names)))
+        (should (< (cl-position "kill-session" names :test #'equal)
+                   (cl-position "new-session" names :test #'equal)
+                   (cl-position "link-window" names :test #'equal)))))))
+
+(ert-deftest rsr/agent-tmux-without-own-view-switches-the-session-terminal ()
+  "RET keeps the old behaviour: *tmux: test* is switched to @7."
+  (rsr/agent-tmux-test--showing nil 111
+    (should (equal (car shown) "*tmux: test*"))
+    (should (equal (caar (rsr/agent-tmux-test--called "select-window"))
+                   '("select-window" "-t" "@7")))
+    (should-not (rsr/agent-tmux-test--called "new-session"))))
+
+(ert-deftest rsr/agent-tmux-a-terminal-showing-the-window-is-used-as-is ()
+  "*tmux: test* already shows @7: no view, no tmux switching, just that buffer."
+  (rsr/agent-tmux-test--showing t 4242
+    (should-not shown)
+    (should-not (rsr/agent-tmux-test--called "select-window"))
+    (should-not (rsr/agent-tmux-test--called "new-session"))
+    (should (equal (buffer-name (window-buffer (selected-window))) "*tmux: test*"))))
+
+(ert-deftest rsr/agent-tmux-a-terminal-whose-client-is-not-found-shows-the-current-window ()
+  "Pid 999 has no client yet: *tmux: test* counts as on test's current @7."
+  (rsr/agent-tmux-test--with-fake
+      (lambda (args)
+        (pcase (car args)
+          ("list-clients" (rsr/agent-tmux-test--clients args))
+          ("display-message" "@7")
+          (_ "")))
+    (rsr/agent-tmux-test--with-terminal "*tmux: test*" 999
+      (save-window-excursion
+        (switch-to-buffer term)
+        (should (eq (rsr/agent-tmux--terminal-showing "@7") term))
+        (should-not (rsr/agent-tmux--terminal-showing "@3"))))))
+
+(ert-deftest rsr/agent-tmux-killing-a-proxy-kills-its-view ()
+  (rsr/agent-tmux-test--with-fake #'rsr/agent-tmux-test--standard
+    (let* ((proxy (rsr/agent-tmux-test--open-proxy))
+           (view (get-buffer-create
+                  (rsr/agent-tmux-view-buffer-name
+                   (buffer-local-value 'rsr/agent-tmux-session proxy) "@7"))))
+      (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+        (kill-buffer proxy))
+      (should-not (buffer-live-p view)))))
+
 ;;; Live, against a real tmux server on a private socket
 
 (ert-deftest rsr/agent-tmux-live-window-gets-session-environment ()
@@ -375,6 +565,47 @@ Runs on its own server (empty config, private socket) and kills it after."
         (when (sqlitep rsr/agent-sessions--db) (sqlite-close rsr/agent-sessions--db))
         (dolist (f (list db-file (concat db-file "-wal") (concat db-file "-shm")))
           (when (file-exists-p f) (delete-file f)))))))
+
+(ert-deftest rsr/agent-tmux-live-view-holds-just-its-window-ungrouped ()
+  "A view holds only its agent's window, in no group; its session is untouched.
+The terminal itself is not opened (no ghostel in batch); the e2e harness
+covers attaching and the view going with its client."
+  (skip-unless (executable-find "tmux"))
+  (let ((rsr/agent-tmux-socket (format "agent-sessions-view-test-%d" (emacs-pid))))
+    (call-process "tmux" nil nil nil "-L" rsr/agent-tmux-socket "-f" "/dev/null"
+                  "new-session" "-d" "-s" "app")
+    (unwind-protect
+        (let* ((w1 (rsr/agent-tmux--output "display-message" "-p" "-t" "=app:" "#{window_id}"))
+               (w2 (rsr/agent-tmux--output "new-window" "-d" "-P" "-F" "#{window_id}"
+                                           "-t" "=app:"))
+               (view (rsr/agent-tmux-view-session "app" w2))
+               attach)
+          (cl-letf (((symbol-function 'rsr/agent-tmux--show-terminal)
+                     (lambda (name _session _dir _display args)
+                       (setq attach args)
+                       (get-buffer-create name))))
+            (rsr/agent-tmux-show-view "app" w2 default-directory))
+          (should (equal (rsr/agent-tmux--output "list-windows" "-t" (concat "=" view ":")
+                                                 "-F" "#{window_id}")
+                         w2))
+          (should (equal (rsr/agent-tmux--output "list-sessions" "-F" "#{session_grouped}")
+                         "0\n0"))
+          (should (equal (rsr/agent-tmux--output "list-windows" "-t" "=app:" "-F" "#{window_id}")
+                         (concat w1 "\n" w2)))
+          (should (equal (rsr/agent-tmux--output "display-message" "-p" "-t" "=app:"
+                                                 "#{window_id}")
+                         w1))
+          (should (equal (rsr/agent-tmux-sessions) '("app")))
+          (should (member "destroy-unattached" attach))
+          ;; Asking again reuses the view rather than failing on its name.
+          (cl-letf (((symbol-function 'rsr/agent-tmux--show-terminal)
+                     (lambda (name &rest _) (get-buffer-create name))))
+            (rsr/agent-tmux-show-view "app" w2 default-directory))
+          (should (equal (split-string (rsr/agent-tmux--output "list-sessions" "-F"
+                                                               "#{session_name}")
+                                       "\n" t)
+                         (list "app" view))))
+      (call-process "tmux" nil nil nil "-L" rsr/agent-tmux-socket "kill-server"))))
 
 ;;; Reattaching after Emacs restarts
 

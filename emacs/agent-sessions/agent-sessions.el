@@ -4485,10 +4485,13 @@ caller's action selects it: a second copy of the same terminal is no use."
   "Like `rsr/agent-sessions-jump', but always in a window picked with ace-window.
 RET replaces the only window beside the dashboard; this splits it instead, so
 two sessions or a session and its file can sit side by side.  See
-`rsr/agent-sessions--display-buffer-in-ace-window'."
+`rsr/agent-sessions--display-buffer-in-ace-window'.  A tmux agent whose
+session's terminal is on screen showing another agent gets a terminal of its
+own (`rsr/agent-tmux-own-view'), so both stay in view."
   (interactive)
   (let ((display-buffer-overriding-action
-         '(rsr/agent-sessions--display-buffer-in-ace-window)))
+         '(rsr/agent-sessions--display-buffer-in-ace-window))
+        (rsr/agent-tmux-own-view t))
     (rsr/agent-sessions--jump)))
 
 (defun rsr/agent-sessions-display-or-browse ()
