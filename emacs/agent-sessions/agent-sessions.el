@@ -840,6 +840,44 @@ the agents changing the same code are always listed together."
     (and (buffer-live-p buf)
          (plist-get (rsr/agent-sessions--buffer-repo-info buf) :tmux-session))))
 
+(defvar rsr/agent-sessions--tmux-home-cache (make-hash-table :test 'equal)
+  "Cache of tmux start directory -> its repo info, or `none' outside git.
+Reading repo info runs git, and the render path asks once per tmux agent.
+Cleared by `g'.")
+
+(defconst rsr/agent-sessions--repo-fields
+  '(:repo :repo-root :worktree :worktree-name :branch :worktree-path)
+  "The session fields that place it under a repo and worktree.")
+
+(defun rsr/agent-sessions--tmux-home (session)
+  "Repo info for the git checkout SESSION's tmux session was started in, or nil.
+An agent outside git in a tmux session started inside a repo (a planning agent
+in a Plans folder, say) belongs with that repo's agents, not in a group of its
+own beside them."
+  (when-let* ((tmux (rsr/agent-sessions--session-tmux-group session))
+              (dir (rsr/agent-tmux-session-path tmux)))
+    (let ((info (or (gethash dir rsr/agent-sessions--tmux-home-cache)
+                    (puthash dir (or (rsr/agent-session--repo-info dir) 'none)
+                             rsr/agent-sessions--tmux-home-cache))))
+      (and (listp info) (plist-get info :repo) info))))
+
+(defun rsr/agent-sessions--adopt-tmux-entries (entries)
+  "ENTRIES, with each tmux agent outside git placed in its tmux session's repo.
+Such an entry gets a copy of its session carrying that repo's fields and is
+marked `:adopted', so grouping treats it as a repo agent.  The registry is
+left alone: only the tree's placement changes, and resume still uses the
+agent's own directory and tmux session."
+  (mapcar (lambda (e)
+            (let* ((session (plist-get e :session))
+                   (home (rsr/agent-sessions--tmux-home session)))
+              (if (not home)
+                  e
+                (let ((copy (copy-sequence session)))
+                  (dolist (field rsr/agent-sessions--repo-fields)
+                    (setq copy (plist-put copy field (plist-get home field))))
+                  (append (list :session copy :adopted t) e)))))
+          entries))
+
 (defun rsr/agent-sessions--buffer-terminal-type (buf)
   "Return a symbol naming BUF's terminal backend (`vterm', `eat', `ghostel', or `term')."
   (pcase (buffer-local-value 'major-mode buf)
@@ -3884,8 +3922,10 @@ same path under another session by magit's parent chain."
 
 (defun rsr/agent-sessions--build-tree (entries)
   "Group live ENTRIES into repos, with worktrees in the non-folder view.
-In that view an agent outside any git repository is grouped by its tmux
-session instead, and the group has a single headingless worktree: the tmux
+An agent outside any git repository joins the repo its tmux session was
+started in (see `rsr/agent-sessions--tmux-home').  When that is not a repo
+either, the non-folder view groups it by its tmux session, and the group has
+a single headingless worktree: the tmux
 session is the whole context, so a worktree row would only repeat its name.
 Keying such groups by start directory merged unrelated tmux sessions that
 happened to share one, and split one session across its agents' directories."
@@ -3916,11 +3956,12 @@ happened to share one, and split one session across its agents' directories."
            (lambda (e)
              (let* ((session (plist-get e :session))
                     (tmux (and (not rsr/agent-sessions-group-by-folder)
+                               (not (plist-get e :adopted))
                                (rsr/agent-sessions--session-tmux-group session))))
                (if tmux
                    (cons 'tmux tmux)
                  (rsr/agent-sessions--session-repo session))))
-           entries))))
+           (rsr/agent-sessions--adopt-tmux-entries entries)))))
     (if (not rsr/agent-sessions-group-by-folder)
         (if rsr/agent-sessions-sort-by-activity
             (rsr/agent-sessions--sort-tree repos)
@@ -4248,6 +4289,9 @@ Unlike the internal re-render used by hooks and the sort toggle, this
 invalidates the worktree cache and re-reads each session's repo/branch info."
   (interactive)
   (clrhash rsr/agent-sessions--worktrees-cache)
+  (clrhash rsr/agent-sessions--tmux-home-cache)
+  (when (boundp 'rsr/agent-tmux--session-paths)
+    (clrhash rsr/agent-tmux--session-paths))
   (rsr/agent-sessions--reread-repo-info)
   (rsr/agent-sessions--refresh))
 

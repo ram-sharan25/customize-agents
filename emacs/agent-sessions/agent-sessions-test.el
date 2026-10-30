@@ -341,7 +341,9 @@ terminal's registry entry afterwards."
                                                :worktree "my-app (main)"
                                                :worktree-path "/code/my-app/")))))
       (cl-letf (((symbol-function 'rsr/agent-sessions--session-tmux-group)
-                 (lambda (session) (plist-get session :tmux))))
+                 (lambda (session) (plist-get session :tmux)))
+                ;; No tmux session here started inside a repo.
+                ((symbol-function 'rsr/agent-sessions--tmux-home) #'ignore))
         (let* ((repos (rsr/agent-sessions--build-tree entries))
                (by-name (lambda (name)
                           (seq-find (lambda (r) (equal name (plist-get r :name)))
@@ -365,6 +367,42 @@ terminal's registry entry afterwards."
           ;; A git repo keeps its worktree rows.
           (should-not (plist-get app :tmux))
           (should-not (plist-get (car (plist-get app :worktrees)) :flat)))))))
+
+(ert-deftest rsr/agent-sessions-tmux-agents-join-their-sessions-repo ()
+  "A non-git tmux agent whose tmux session started in a repo joins that repo."
+  (rsr/agent-sessions-test--with-temp-db
+    (let* ((rsr/agent-sessions-group-by-folder nil)
+           (rsr/agent-sessions-sort-by-activity nil)
+           (rsr/agent-sessions-inline-single-worktree t)
+           (home (list :repo "my-app" :repo-root "/code/my-app/"
+                       :worktree "my-app (main)" :worktree-name "my-app"
+                       :branch "main" :worktree-path "/code/my-app/"))
+           (planner (list :tmux "my-app" :repo "my-app" :repo-root "/plans/x/"
+                          :worktree "my-app" :worktree-path "/plans/x/"))
+           (entries
+            (list (list :id "a" :session planner)
+                  (list :id "b" :session (list :repo "my-app"
+                                               :repo-root "/code/my-app/"
+                                               :worktree "my-app (main)"
+                                               :worktree-path "/code/my-app/")))))
+      (cl-letf (((symbol-function 'rsr/agent-sessions--session-tmux-group)
+                 (lambda (session) (plist-get session :tmux)))
+                ((symbol-function 'rsr/agent-tmux-session-path)
+                 (lambda (_) "/code/my-app/"))
+                ((symbol-function 'rsr/agent-session--repo-info)
+                 (lambda (_) home)))
+        (clrhash rsr/agent-sessions--tmux-home-cache)
+        (let ((repos (rsr/agent-sessions--build-tree entries)))
+          (should (= (length repos) 1))
+          (should-not (plist-get (car repos) :tmux))
+          (should (equal (plist-get (car repos) :name) "my-app"))
+          ;; Both land in the session's worktree, so it can be named inline.
+          (should (equal (mapcar (lambda (e) (plist-get e :id))
+                                 (plist-get (car (plist-get (car repos) :worktrees))
+                                            :entries))
+                         '("a" "b")))
+          ;; The registry's own record is untouched.
+          (should (equal (plist-get planner :worktree-path) "/plans/x/")))))))
 
 (ert-deftest rsr/agent-sessions-tmux-group-heading-uses-tmux-icon ()
   (with-temp-buffer
