@@ -174,7 +174,9 @@ workspace.  Elsewhere: a session name read from the user, and DIR."
 (defun rsr/agent-tmux-ensure-session (session dir)
   "Create detached SESSION in DIR unless it already exists."
   (or (rsr/agent-tmux--ok "has-session" "-t" (concat "=" session))
-      (rsr/agent-tmux--ok "new-session" "-d" "-s" session "-c" dir)))
+      ;; A session of this name that has since gone may have started elsewhere.
+      (progn (remhash session rsr/agent-tmux--session-paths)
+             (rsr/agent-tmux--ok "new-session" "-d" "-s" session "-c" dir))))
 
 (defun rsr/agent-tmux-session-buffer (session)
   "The ghostel buffer attached to SESSION, or nil."
