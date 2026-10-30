@@ -184,6 +184,16 @@ workspace.  Elsewhere: a session name read from the user, and DIR."
 (defvar ghostel--process)
 (defvar ghostel--pid)
 
+(defconst rsr/agent-tmux-other-window-action
+  '((display-buffer-reuse-window display-buffer-use-some-window)
+    (inhibit-same-window . t)
+    (some-window . mru))
+  "How a session, its file or its link is shown from the dashboard.
+Reuse a window already showing the buffer, else replace the most recently used
+other window; never split.  The dashboard sits in a side window, which
+`display-buffer' will not reuse, so its default action split the frame anew
+on every open.")
+
 (defun rsr/agent-tmux-show (session dir &optional display)
   "Show SESSION in its ghostel buffer, attaching to it as needed.
 A session that doesn't exist yet is created in DIR.  With DISPLAY non-nil,
@@ -191,8 +201,8 @@ display the buffer without selecting it.  Return the buffer."
   (require 'ghostel)
   (let ((buffer (get-buffer-create (format "*tmux: %s*" session))))
     (if display
-        (display-buffer buffer '(nil (inhibit-same-window . t)))
-      (pop-to-buffer buffer))
+        (display-buffer buffer rsr/agent-tmux-other-window-action)
+      (pop-to-buffer buffer rsr/agent-tmux-other-window-action))
     (with-current-buffer buffer
       (unless (process-live-p ghostel--process)
         (setq default-directory (file-name-as-directory dir))

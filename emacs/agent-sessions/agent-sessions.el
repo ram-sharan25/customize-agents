@@ -1246,6 +1246,7 @@ not push the titles of stated rows out of line with unstated ones."
 
 (defconst rsr/agent-sessions--icon-specs
   '((repo nerd-icons-octicon "nf-oct-repo" rsr/agent-session-repo)
+    (tmux nerd-icons-codicon "nf-cod-terminal_tmux" rsr/agent-session-repo)
     (worktree nerd-icons-octicon "nf-oct-file_directory" font-lock-function-name-face)
     (folder nerd-icons-mdicon "nf-md-folder_star" font-lock-function-name-face)
     (note nerd-icons-mdicon "nf-md-note_text_outline" rsr/agent-session-note)
@@ -3844,7 +3845,8 @@ up its group through the enclosing worktree section."
                                :root (plist-get repo :root)
                                :tmux (plist-get repo :tmux)))
     (magit-insert-heading
-      (rsr/agent-sessions--icon 'repo)
+      ;; A tmux group can share its name with a repo; the icon tells them apart.
+      (rsr/agent-sessions--icon (if (plist-get repo :tmux) 'tmux 'repo))
       (propertize (plist-get repo :name) 'font-lock-face 'rsr/agent-session-repo))
     (rsr/agent-sessions--insert-note
      (list (rsr/agent-sessions--repo-note-key repo))
@@ -4140,9 +4142,11 @@ dispatch menu in that directory (see `rsr/agent-sessions--switch-project')."
    ((rsr/agent-sessions--link-at-point)
     (rsr/agent-sessions--open-link-at-point
      (lambda (url)
-       (rsr/agent-sessions--show-linear-heading url #'pop-to-buffer))))
+       (rsr/agent-sessions--show-linear-heading
+        url #'rsr/agent-sessions--pop-to-other-window))))
    ((rsr/agent-sessions--file-at-point)
-    (rsr/agent-sessions--open-file-at-point #'pop-to-buffer))
+    (rsr/agent-sessions--open-file-at-point
+     #'rsr/agent-sessions--pop-to-other-window))
    (t
     (let ((section (magit-current-section)))
       (pcase (and section (oref section type))
@@ -4165,17 +4169,16 @@ dispatch menu in that directory (see `rsr/agent-sessions--switch-project')."
 Files, sessions and a Linear link's Org heading use another window; other
 external links open in the browser."
   (interactive)
-  ;; inhibit-same-window: never reuse/replace the dashboard's own window.
   (cond
    ((rsr/agent-sessions--link-at-point)
     (rsr/agent-sessions--open-link-at-point
      (lambda (url)
        (rsr/agent-sessions--show-linear-heading
         url
-        (lambda (buf) (display-buffer buf '(nil (inhibit-same-window . t))))))))
+        (lambda (buf) (display-buffer buf rsr/agent-tmux-other-window-action))))))
    ((rsr/agent-sessions--file-at-point)
     (rsr/agent-sessions--open-file-at-point
-     (lambda (buf) (display-buffer buf '(nil (inhibit-same-window . t))))))
+     (lambda (buf) (display-buffer buf rsr/agent-tmux-other-window-action))))
    (t
     (let* ((session (rsr/agent-sessions--session-at-point))
            (buf (and session (plist-get session :buffer))))
@@ -4192,8 +4195,13 @@ window selected, and count that as looking at the session."
         (rsr/agent-tmux-show-proxy buf display)
         (rsr/agent-session--clear-attention buf))
     (if display
-        (display-buffer buf '(nil (inhibit-same-window . t)))
-      (pop-to-buffer buf))))
+        (display-buffer buf rsr/agent-tmux-other-window-action)
+      (rsr/agent-sessions--pop-to-other-window buf))))
+
+(defun rsr/agent-sessions--pop-to-other-window (buf)
+  "Select BUF in another window, reusing one rather than splitting.
+See `rsr/agent-tmux-other-window-action'."
+  (pop-to-buffer buf rsr/agent-tmux-other-window-action))
 
 (defun rsr/agent-sessions-display-or-browse ()
   "Display the thing at point, browsing links and shared HTML files.
@@ -4650,7 +4658,7 @@ BUFNAME is the desired buffer name.  Loads the backend package lazily."
               ;; arg non-nil, non-number => eat--1 uses `generate-new-buffer'.
               (eat-other-window nil t)))
       ('ghostel (require 'ghostel)
-                (ghostel-create bufname '(nil (inhibit-same-window . t))))
+                (ghostel-create bufname rsr/agent-tmux-other-window-action))
       ('tmux (rsr/agent-sessions--tmux-open default-directory bufname))
       (_ (error "Unknown `rsr/agent-sessions-terminal': %S"
                 rsr/agent-sessions-terminal)))))

@@ -270,6 +270,23 @@
           (should-not (plist-get app :tmux))
           (should-not (plist-get (car (plist-get app :worktrees)) :flat)))))))
 
+(ert-deftest rsr/agent-sessions-tmux-group-heading-uses-tmux-icon ()
+  (with-temp-buffer
+    (rsr/agent-sessions-mode)
+    (let ((inhibit-read-only t)
+          (rsr/agent-sessions-icons t)
+          icons)
+      (cl-letf (((symbol-function 'rsr/agent-sessions--icon)
+                 (lambda (kind &optional _) (push kind icons) ""))
+                ((symbol-function 'rsr/agent-sessions--insert-note) #'ignore)
+                ((symbol-function 'rsr/agent-sessions--insert-worktree) #'ignore))
+        (magit-insert-section (rsr/agent-sessions-root)
+          (rsr/agent-sessions--insert-repo
+           (list :name "customize-agents" :root "/plans/" :tmux t))
+          (rsr/agent-sessions--insert-repo
+           (list :name "customize-agents" :root "/code/customize-agents/"))))
+      (should (equal (reverse icons) '(tmux repo))))))
+
 (ert-deftest rsr/agent-sessions-flat-worktree-has-no-heading ()
   (with-temp-buffer
     (rsr/agent-sessions-mode)
@@ -280,6 +297,29 @@
           (rsr/agent-sessions--insert-worktree
            (list :label "basemap" :path "/plans/" :flat t :entries nil))))
       (should (equal (buffer-string) "ROW\n")))))
+
+(ert-deftest rsr/agent-sessions-opening-from-side-window-does-not-split ()
+  "Opening sessions from the side-window dashboard reuses the main window."
+  (let ((rsr/agent-sessions-display-side 'left)
+        (rsr/agent-sessions-buffer-name "*agent-sessions-split-test*")
+        (one (get-buffer-create " *split-test-one*"))
+        (two (get-buffer-create " *split-test-two*")))
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (cl-letf (((symbol-function 'rsr/agent-sessions--refresh) #'ignore))
+            (rsr/agent-sessions-list))
+          (let ((count (length (window-list))))
+            (rsr/agent-sessions--pop-to-other-window one)
+            (select-window (get-buffer-window rsr/agent-sessions-buffer-name))
+            (rsr/agent-sessions--pop-to-other-window two)
+            (should (= (length (window-list)) count))
+            (should (get-buffer-window rsr/agent-sessions-buffer-name))
+            (should (eq (window-buffer (selected-window)) two))))
+      (when-let ((win (get-buffer-window rsr/agent-sessions-buffer-name)))
+        (delete-window win))
+      (mapc #'kill-buffer (list one two))
+      (kill-buffer rsr/agent-sessions-buffer-name))))
 
 (ert-deftest rsr/agent-sessions-list-opens-in-side-window ()
   (let ((rsr/agent-sessions-display-side 'left)
