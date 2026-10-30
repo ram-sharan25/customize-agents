@@ -543,6 +543,19 @@ the body names the agent type, state, and its terminal title (task summary)."
              title)
      buf)))
 
+(defun rsr/agent-sessions--taken-over-p (existing agent-type buf)
+  "Non-nil when a new AGENT-TYPE session has replaced EXISTING in terminal BUF.
+Either the old agent reported `SessionEnd', or the program now running in BUF
+is AGENT-TYPE while EXISTING recorded another type (an agent killed without
+saying so).  A stray event from a daemon with a stale environment meets
+neither, so it is still turned away.  An exited agent is gone from the
+dashboard for good; its own resume menu brings it back."
+  (and existing
+       (or (equal (plist-get existing :last-event) "SessionEnd")
+           (and (not (equal agent-type (plist-get existing :agent-type)))
+                (equal agent-type
+                       (rsr/agent-sessions--foreground-command buf))))))
+
 (defun rsr/agent-sessions--hook-buffer (transport-id agent-type payload)
   "Resolve a hook PAYLOAD to its terminal buffer.
 TRANSPORT-ID is the `EMACS_AGENT_SESSION_ID' inherited by the hook process.
@@ -576,7 +589,9 @@ directory matches PAYLOAD's `cwd'; return nil rather than guess if ambiguous."
                (and (or (null agent-sid)
                         (null (plist-get existing :agent-session-id))
                         (equal agent-sid
-                               (plist-get existing :agent-session-id)))
+                               (plist-get existing :agent-session-id))
+                        (rsr/agent-sessions--taken-over-p
+                         existing agent-type direct))
                     (or (null canonical-cwd)
                         (equal canonical-cwd
                                (ignore-errors
@@ -629,7 +644,19 @@ to the terminal that actually owns the event."
          (event-name (or (and payload (gethash "hook_event_name" payload))
                          (and payload (gethash "type" payload))
                          "unknown"))
-         (existing (gethash session-id rsr/agent-sessions))
+         (existing (let ((old (gethash session-id rsr/agent-sessions))
+                         (sid (and payload
+                                   (or (gethash "session_id" payload)
+                                       (gethash "conversation_id" payload)
+                                       (gethash "thread_id" payload)))))
+                     ;; A new agent in the same terminal starts fresh rather
+                     ;; than inheriting the exited one's parent, prompt or id.
+                     (unless (and old sid (plist-get old :agent-session-id)
+                                  (not (equal sid (plist-get old :agent-session-id)))
+                                  (buffer-live-p buf)
+                                  (rsr/agent-sessions--taken-over-p
+                                   old agent-type buf))
+                       old)))
          (status (or (rsr/agent-session--status-for agent-type event-name)
                      (and existing (plist-get existing :status))
                      'running))

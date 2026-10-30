@@ -93,6 +93,73 @@
        (kill-buffer other)
        (delete-directory directory t)))))
 
+(defun rsr/agent-hook-test--swap (old-event foreground)
+  "Notify a claude event into a terminal whose pi last sent OLD-EVENT.
+FOREGROUND is the program the terminal reports running.  Return the
+terminal's registry entry afterwards."
+  (rsr/agent-sessions-test--with-temp-db
+    (let* ((directory (make-temp-file "agent-hook-swap-" t))
+           (term (generate-new-buffer " *agent-hook-swap*"))
+           (payload-file (make-temp-file "agent-hook-payload-"))
+           (rsr/agent-session-id->buffer (make-hash-table :test 'equal))
+           (rsr/agent-sessions (make-hash-table :test 'equal))
+           (rsr/agent-session-notify-on-attention nil))
+      (unwind-protect
+          (progn
+            (with-current-buffer term
+              (setq-local rsr/agent-session-id "term")
+              (setq default-directory (file-name-as-directory directory)))
+            (puthash "term" term rsr/agent-session-id->buffer)
+            (puthash "term" (list :buffer term :agent-type "pi"
+                                  :agent-session-id "pi-sid"
+                                  :last-event old-event :status 'stopped
+                                  :branched-from '("parent-sid" . "parent")
+                                  :submitted-prompt "old prompt")
+                     rsr/agent-sessions)
+            (with-temp-file payload-file
+              (insert (json-serialize
+                       (let ((payload (make-hash-table :test 'equal)))
+                         (puthash "hook_event_name" "SessionStart" payload)
+                         (puthash "session_id" "claude-sid" payload)
+                         (puthash "cwd" directory payload)
+                         payload))))
+            (cl-letf (((symbol-function 'rsr/agent-sessions--foreground-command)
+                       (lambda (_) foreground))
+                      ((symbol-function 'rsr/agent-session--repo-info)
+                       (lambda (_) (list :repo "repo" :repo-root directory
+                                         :worktree-path directory)))
+                      ((symbol-function 'rsr/agent-sessions--detect-parent) #'ignore)
+                      ((symbol-function 'rsr/agent-sessions--log-update) #'ignore)
+                      ((symbol-function 'rsr/agent-orchestration--hydrate) #'ignore)
+                      ((symbol-function 'rsr/agent-orchestration-deliver) #'ignore)
+                      ((symbol-function 'rsr/agent-sessions--refresh-if-visible)
+                       #'ignore))
+              (rsr/agent-hook-notify "term" "claude" payload-file))
+            (gethash "term" rsr/agent-sessions))
+        (when (file-exists-p payload-file) (delete-file payload-file))
+        (kill-buffer term)
+        (delete-directory directory t)))))
+
+(ert-deftest rsr/agent-hook-new-agent-takes-over-after-exit ()
+  "Claude started where pi exited replaces pi's row, carrying nothing over."
+  (let ((session (rsr/agent-hook-test--swap "SessionEnd" "claude")))
+    (should (equal (plist-get session :agent-type) "claude"))
+    (should (equal (plist-get session :agent-session-id) "claude-sid"))
+    (should-not (plist-get session :branched-from))
+    (should-not (plist-get session :submitted-prompt))))
+
+(ert-deftest rsr/agent-hook-new-agent-takes-over-after-hard-kill ()
+  "No `SessionEnd' from pi, but claude is what the terminal now runs."
+  (let ((session (rsr/agent-hook-test--swap "Stop" "claude")))
+    (should (equal (plist-get session :agent-type) "claude"))
+    (should (equal (plist-get session :agent-session-id) "claude-sid"))))
+
+(ert-deftest rsr/agent-hook-stray-event-still-rejected ()
+  "pi is alive and running: another session's event must not take its row."
+  (let ((session (rsr/agent-hook-test--swap "Stop" "pi")))
+    (should (equal (plist-get session :agent-type) "pi"))
+    (should (equal (plist-get session :agent-session-id) "pi-sid"))))
+
 (ert-deftest rsr/agent-sessions-share-file-prefers-durable-agent-id ()
   (let* ((source (make-temp-file "agent-share-routing-"))
          (target-buffer (generate-new-buffer " *agent-share-target*"))
