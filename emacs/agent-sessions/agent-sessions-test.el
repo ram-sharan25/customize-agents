@@ -601,6 +601,126 @@ terminal's registry entry afterwards."
             (should-not (eq (window-buffer here) buf))))
       (kill-buffer buf))))
 
+(defmacro rsr/agent-sessions-test--with-ace (pick &rest body)
+  "Run BODY beside a side-window dashboard, with ace-window's picker faked.
+PICK is called with the windows offered and returns the chosen one.  Batch
+Emacs runs on the initial terminal, whose windows `aw-window-list' always
+drops, so the list is rebuilt here from `aw-ignored-p' alone."
+  (declare (indent 1))
+  `(let ((rsr/agent-sessions-display-side 'left)
+         (rsr/agent-sessions-buffer-name "*agent-sessions-ace-test*"))
+     (require 'ace-window)
+     (unwind-protect
+         (progn
+           (delete-other-windows)
+           (cl-letf (((symbol-function 'rsr/agent-sessions--refresh) #'ignore))
+             (rsr/agent-sessions-list))
+           (cl-letf (((symbol-function 'aw-window-list)
+                      (lambda () (seq-remove #'aw-ignored-p (window-list))))
+                     ((symbol-function 'aw-select)
+                      (lambda (_mode-line action)
+                        (funcall action (funcall ,pick (aw-window-list))))))
+             ,@body))
+       (when-let ((win (get-buffer-window rsr/agent-sessions-buffer-name)))
+         (delete-window win))
+       (kill-buffer rsr/agent-sessions-buffer-name))))
+
+(ert-deftest rsr/agent-sessions-o-is-bound-to-jump-other-window ()
+  (should (eq (lookup-key rsr/agent-sessions-mode-map (kbd "o"))
+              #'rsr/agent-sessions-jump-other-window)))
+
+(ert-deftest rsr/agent-sessions-ace-display-uses-the-picked-window ()
+  "The picked window shows the buffer; the dashboard is never offered."
+  (let ((buf (get-buffer-create " *ace-test-buf*"))
+        offered)
+    (unwind-protect
+        (rsr/agent-sessions-test--with-ace
+            (lambda (windows) (setq offered windows) (cadr windows))
+          (split-window (window-main-window) nil 'right)
+          (let ((count (length (window-list))))
+            (pop-to-buffer buf '(rsr/agent-sessions--display-buffer-in-ace-window))
+            (should (= (length offered) 2))
+            (should-not (memq (get-buffer-window rsr/agent-sessions-buffer-name)
+                              offered))
+            (should (eq (selected-window) (cadr offered)))
+            (should (eq (window-buffer (selected-window)) buf))
+            (should (= (length (window-list)) count))))
+      (kill-buffer buf))))
+
+(ert-deftest rsr/agent-sessions-ace-display-splits-a-lone-window ()
+  "With one window beside the dashboard, it is split and the buffer goes in the new half."
+  (let ((buf (get-buffer-create " *ace-test-buf*")))
+    (unwind-protect
+        (rsr/agent-sessions-test--with-ace
+            (lambda (_) (error "Picker should not be shown"))
+          (let ((count (length (window-list))))
+            (pop-to-buffer buf '(rsr/agent-sessions--display-buffer-in-ace-window))
+            (should (= (length (window-list)) (1+ count)))
+            (should (eq (window-buffer (selected-window)) buf))
+            (should (get-buffer-window rsr/agent-sessions-buffer-name))
+            ;; A window made for the buffer is deleted again by `q'.
+            (should (eq (car (window-parameter (selected-window) 'quit-restore))
+                        'window))))
+      (kill-buffer buf))))
+
+(ert-deftest rsr/agent-sessions-o-on-a-shown-buffer-selects-it ()
+  "`o' on a buffer already on screen selects it: no split, no second copy."
+  (let ((buf (get-buffer-create " *ace-test-buf*")))
+    (unwind-protect
+        (rsr/agent-sessions-test--with-ace
+            (lambda (_) (error "Picker should not be shown"))
+          (set-window-buffer (window-main-window) buf)
+          (let ((count (length (window-list)))
+                (display-buffer-overriding-action
+                 '(rsr/agent-sessions--display-buffer-in-ace-window)))
+            (pop-to-buffer buf rsr/agent-tmux-other-window-action)
+            (should (= (length (window-list)) count))
+            (should (= (length (get-buffer-window-list buf)) 1))
+            (should (eq (window-buffer (selected-window)) buf))))
+      (kill-buffer buf))))
+
+(ert-deftest rsr/agent-sessions-ace-display-quit-opens-nothing ()
+  "Quitting the picker quits, rather than falling back to another window."
+  (let ((buf (get-buffer-create " *ace-test-buf*")))
+    (unwind-protect
+        (rsr/agent-sessions-test--with-ace (lambda (_) nil)
+          (split-window (window-main-window) nil 'right)
+          ;; `should-error' only catches errors, and `quit' is not one.
+          (should (eq (condition-case nil
+                          (let ((display-buffer-overriding-action
+                                 '(rsr/agent-sessions--display-buffer-in-ace-window)))
+                            (pop-to-buffer buf rsr/agent-tmux-other-window-action)
+                            'shown)
+                        (quit 'quit))
+                      'quit))
+          (should-not (get-buffer-window buf)))
+      (kill-buffer buf))))
+
+(ert-deftest rsr/agent-sessions-ret-asks-only-with-several-windows ()
+  "RET replaces a lone window silently, asks among several, and reuses a shown buffer."
+  (let ((one (get-buffer-create " *ace-test-one*"))
+        (two (get-buffer-create " *ace-test-two*"))
+        asked)
+    (unwind-protect
+        (rsr/agent-sessions-test--with-ace
+            (lambda (windows) (setq asked t) (cadr windows))
+          (let ((display-buffer-overriding-action
+                 '(rsr/agent-sessions--display-buffer-ace-if-several)))
+            (let ((count (length (window-list))))
+              (pop-to-buffer one rsr/agent-tmux-other-window-action)
+              (should-not asked)
+              (should (= (length (window-list)) count)))
+            (split-window (window-main-window) nil 'right)
+            (pop-to-buffer two rsr/agent-tmux-other-window-action)
+            (should asked)
+            (should (eq (window-buffer (selected-window)) two))
+            (setq asked nil)
+            (select-window (get-buffer-window rsr/agent-sessions-buffer-name))
+            (pop-to-buffer two rsr/agent-tmux-other-window-action)
+            (should-not asked)
+            (should (eq (window-buffer (selected-window)) two))))
+      (mapc #'kill-buffer (list one two)))))
+
 (ert-deftest rsr/agent-sessions-list-opens-in-side-window ()
   (let ((rsr/agent-sessions-display-side 'left)
         (rsr/agent-sessions-window-width 45)

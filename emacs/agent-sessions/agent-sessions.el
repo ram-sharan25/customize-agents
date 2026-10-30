@@ -4356,8 +4356,16 @@ On a session row, pop to its terminal.  Open a shared file or external link
 and clear its highlight; a Linear link jumps to its issue's heading in
 `rsr/agent-sessions-linear-org-file', or opens in the Linear app when the
 issue is not there.  On a worktree or repo heading, open project.el's
-dispatch menu in that directory (see `rsr/agent-sessions--switch-project')."
+dispatch menu in that directory (see `rsr/agent-sessions--switch-project').
+With more than one window beside the dashboard, ace-window asks which one to
+replace; see `rsr/agent-sessions--display-buffer-ace-if-several'."
   (interactive)
+  (let ((display-buffer-overriding-action
+         '(rsr/agent-sessions--display-buffer-ace-if-several)))
+    (rsr/agent-sessions--jump)))
+
+(defun rsr/agent-sessions--jump ()
+  "The body of `rsr/agent-sessions-jump', in whatever window `display-buffer' picks."
   (cond
    ((rsr/agent-sessions--link-at-point)
     (rsr/agent-sessions--open-link-at-point
@@ -4422,6 +4430,66 @@ window selected, and count that as looking at the session."
   "Select BUF in another window, reusing one rather than splitting.
 See `rsr/agent-tmux-other-window-action'."
   (pop-to-buffer buf rsr/agent-tmux-other-window-action))
+
+(declare-function aw-select "ace-window")
+(declare-function aw-window-list "ace-window")
+(declare-function aw-split-window-fair "ace-window")
+(defvar aw-ignored-buffers)
+(defvar aw-ignore-on)
+
+(defun rsr/agent-sessions--ace-pick (&optional split-lone)
+  "A window picked with ace-window; the dashboard is never offered.
+ace-window's dispatch keys still apply, so `b' then a letter splits that
+window side by side (`v' one above the other) and returns the new half.
+With one window to choose from there is no choice to make: split it when
+SPLIT-LONE, else return nil, as also without ace-window installed.
+Quitting the picker quits the command, rather than letting `display-buffer'
+fall back to another window."
+  (when (require 'ace-window nil t)
+    (let* ((aw-ignore-on t)
+           (aw-ignored-buffers (cons rsr/agent-sessions-buffer-name aw-ignored-buffers))
+           (candidates (aw-window-list)))
+      (cond
+       ((cdr candidates)
+        (let ((window (aw-select " Ace - Open" #'identity)))
+          (if (window-live-p window) window (signal 'quit nil))))
+       ((and candidates split-lone)
+        (aw-split-window-fair (car candidates)))))))
+
+(defun rsr/agent-sessions--display-buffer-ace-if-several (buffer alist)
+  "`display-buffer' action for RET: ask with ace-window only given a choice.
+A BUFFER already on screen, or a single window beside the dashboard, returns
+nil, so the caller's action reuses that window without asking."
+  (unless (get-buffer-window buffer)
+    (let ((before (window-list)))
+      (when-let ((window (rsr/agent-sessions--ace-pick)))
+        (window--display-buffer buffer window
+                                (if (memq window before) 'reuse 'window)
+                                alist)))))
+
+(defun rsr/agent-sessions--display-buffer-in-ace-window (buffer alist)
+  "`display-buffer' action for `o': show BUFFER in a window picked with ace-window.
+Unlike RET it asks even between two windows, and a single window beside the
+dashboard is split rather than replaced.  A window split for BUFFER is
+deleted again by `q'.  A BUFFER already on screen returns nil, so the
+caller's action selects it: a second copy of the same terminal is no use."
+  (unless (get-buffer-window buffer)
+    (let* ((before (window-list))
+           (window (rsr/agent-sessions--ace-pick t)))
+      (when window
+        (window--display-buffer buffer window
+                                (if (memq window before) 'reuse 'window)
+                                alist)))))
+
+(defun rsr/agent-sessions-jump-other-window ()
+  "Like `rsr/agent-sessions-jump', but always in a window picked with ace-window.
+RET replaces the only window beside the dashboard; this splits it instead, so
+two sessions or a session and its file can sit side by side.  See
+`rsr/agent-sessions--display-buffer-in-ace-window'."
+  (interactive)
+  (let ((display-buffer-overriding-action
+         '(rsr/agent-sessions--display-buffer-in-ace-window)))
+    (rsr/agent-sessions--jump)))
 
 (defun rsr/agent-sessions-display-or-browse ()
   "Display the thing at point, browsing links and shared HTML files.
@@ -7232,6 +7300,8 @@ out one that is already taken — or hide one that just became available."
             worktrees "")))))))
 
 (define-key rsr/agent-sessions-mode-map (kbd "RET") #'rsr/agent-sessions-jump)
+;; `o' is "other window", as in dired, ibuffer and occur.
+(define-key rsr/agent-sessions-mode-map (kbd "o") #'rsr/agent-sessions-jump-other-window)
 (define-key rsr/agent-sessions-mode-map (kbd "d") #'rsr/agent-sessions-show-file-diff)
 (define-key rsr/agent-sessions-mode-map (kbd "v") #'rsr/agent-sessions-display)
 (define-key rsr/agent-sessions-mode-map (kbd "V") #'rsr/agent-sessions-display-or-browse)
