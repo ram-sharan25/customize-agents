@@ -275,6 +275,35 @@ terminal's registry entry afterwards."
         (rsr/agent-sessions--insert-session entry 1 t)
         (should (string-match-p "\\`    └ ○ " (buffer-string)))))))
 
+(ert-deftest rsr/agent-sessions-state-column-fits-shown-states ()
+  (with-temp-buffer
+    ;; No stage on screen: no blank column before the title.
+    (setq rsr/agent-sessions--state-width 0)
+    (should (equal (substring-no-properties
+                    (rsr/agent-sessions--row-text "P " nil "Title" 'default))
+                   "P Title"))
+    ;; Sized to the widest stage shown, so titles still line up.
+    (setq rsr/agent-sessions--state-width (1+ (length "PLANNING")))
+    (should (equal (substring-no-properties
+                    (rsr/agent-sessions--row-text "P " "PLANNING" "Title" 'default))
+                   "P PLANNING Title"))
+    (should (equal (substring-no-properties
+                    (rsr/agent-sessions--row-text "P " nil "Title" 'default))
+                   "P          Title"))))
+
+(ert-deftest rsr/agent-sessions-attachment-column-fits-names ()
+  (cl-letf (((symbol-function 'rsr/agent-sessions--session-links)
+             (lambda (_) (list (list :kind "linear" :url "https://x"))))
+            ((symbol-function 'rsr/agent-sessions--session-files)
+             (lambda (_) (list (list :path "/tmp/brief.md")))))
+    (should (= (rsr/agent-sessions--attachment-name-width nil)
+               (max (length "brief.md")
+                    (length (rsr/agent-sessions--link-kind-label
+                             (list :kind "linear")))))))
+  (cl-letf (((symbol-function 'rsr/agent-sessions--session-links) #'ignore)
+            ((symbol-function 'rsr/agent-sessions--session-files) #'ignore))
+    (should (= (rsr/agent-sessions--attachment-name-width nil) 1))))
+
 (ert-deftest rsr/agent-sessions-status-glyph-per-status ()
   (should (equal (rsr/agent-sessions--status-glyph 'running) "●"))
   (should (equal (rsr/agent-sessions--status-glyph 'idle) "◐"))

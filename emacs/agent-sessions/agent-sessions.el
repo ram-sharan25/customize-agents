@@ -1189,11 +1189,17 @@ an agent reading its inbox must not fail because the database is busy."
   (let ((n (rsr/agent-orchestration--pending-count id)))
     (if (> n 0) (format "  ✉%d" n) "")))
 
+(defvar-local rsr/agent-sessions--state-width nil
+  "State column width for the current render, set by `rsr/agent-sessions--refresh'.
+Nil outside a render, where the column falls back to fit every listed state.")
+
 (defun rsr/agent-sessions--state-column-width ()
-  "Width of the state column: the widest state, plus a separating space.
-Computed rather than fixed so a state added to `rsr/agent-sessions-states' does
-not push the titles of stated rows out of line with unstated ones."
-  (1+ (apply #'max 0 (mapcar #'length rsr/agent-sessions-states))))
+  "Width of the state column: the widest state shown, plus a separating space.
+Sized to the states actually on screen, and zero when no row has one, so a
+narrow side window spends no blank columns before the titles.  Every row in a
+render shares the width, so stated and unstated titles still line up."
+  (or rsr/agent-sessions--state-width
+      (1+ (apply #'max 0 (mapcar #'length rsr/agent-sessions-states)))))
 
 (defun rsr/agent-sessions--session-worktree-name (session)
   "Return SESSION's worktree directory name, including older registry entries."
@@ -1361,8 +1367,10 @@ FACE dresses the whole row (it is what spans an attention highlight across it),
 and the state's own face is *merged* on top rather than replacing it — merged,
 because the state faces set a foreground and the row face sets a background, and
 either replacing the row face or letting it win would lose one of the two."
-  (let* ((column (format (format "%%-%ds" (rsr/agent-sessions--state-column-width))
-                         (or state "")))
+  (let* ((width (rsr/agent-sessions--state-column-width))
+         (column (if (zerop width)
+                     ""
+                   (format (format "%%-%ds" width) (or state ""))))
          (row (rsr/agent-sessions--dress (concat prefix column suffix) face))
          (state-face (and state (rsr/agent-sessions--state-face state))))
     (when state-face
@@ -1442,8 +1450,10 @@ indentation conveys the relationship."
       (rsr/agent-sessions--insert-note
        (rsr/agent-sessions--session-note-keys session)
        (concat base indent "    "))
-      (rsr/agent-sessions--insert-links session (concat base indent "    "))
-      (rsr/agent-sessions--insert-files session (concat base indent "    ")))))
+      (let ((rsr/agent-sessions--attachment-width
+             (rsr/agent-sessions--attachment-name-width session)))
+        (rsr/agent-sessions--insert-links session (concat base indent "    "))
+        (rsr/agent-sessions--insert-files session (concat base indent "    "))))))
 
 (defun rsr/agent-sessions--insert-entries (entries)
   "Insert ENTRIES, nesting any branched session under its parent when present.
@@ -3707,13 +3717,33 @@ not make them learn two highlights for it.")
 Only the URL carries it, and without `link''s underline: spread over the whole
 row, the underline ran from the left edge and read as a rule between rows.")
 
+(defvar rsr/agent-sessions--attachment-width 28
+  "Name column width for file and link rows; bound per session when rendering.")
+
+(defun rsr/agent-sessions--link-kind-label (link)
+  "The label naming LINK's kind on its row, e.g. `Linear'."
+  (let ((kind (plist-get link :kind)))
+    (or (cdr (assoc kind rsr/agent-sessions--link-kind-labels)) kind)))
+
+(defun rsr/agent-sessions--attachment-name-width (session)
+  "Width of the name column for SESSION's file and link rows.
+Fits the longest name among them, so a short `Linear' or `brief.md' does not
+push its URL or label off a narrow window."
+  (apply #'max 1
+         (append
+          (mapcar (lambda (link)
+                    (string-width (or (rsr/agent-sessions--link-kind-label link) "")))
+                  (rsr/agent-sessions--session-links session))
+          (mapcar (lambda (file)
+                    (string-width (file-name-nondirectory
+                                   (directory-file-name (plist-get file :path)))))
+                  (rsr/agent-sessions--session-files session)))))
+
 (defun rsr/agent-sessions--insert-link (link indent)
   "Insert a row for shared external LINK, indented by INDENT."
-  (let* ((kind (plist-get link :kind))
-         (url (plist-get link :url))
+  (let* ((url (plist-get link :url))
          (unvisited (null (plist-get link :visited-at)))
-         (kind-label (or (cdr (assoc kind rsr/agent-sessions--link-kind-labels))
-                         kind)))
+         (kind-label (rsr/agent-sessions--link-kind-label link)))
     (push (cons (line-beginning-position)
                 (if unvisited 'needs-attention 'idle))
           rsr/agent-sessions--row-status)
@@ -3722,7 +3752,8 @@ row, the underline ran from the left edge and read as a rule between rows.")
        (rsr/agent-sessions--dress
         (concat indent (if unvisited "● " "  ")
                 (rsr/agent-sessions--icon 'link)
-                (propertize (format "%-28s " kind-label)
+                (propertize (format (format "%%-%ds " rsr/agent-sessions--attachment-width)
+                                    kind-label)
                             'font-lock-face 'rsr/agent-session-link-kind)
                 (propertize (or (plist-get link :label) url)
                             'font-lock-face 'rsr/agent-session-link)
@@ -3762,7 +3793,7 @@ same path under another session by magit's parent chain."
        (rsr/agent-sessions--dress
         (concat indent (if unvisited "● " "  ")
                 (rsr/agent-sessions--icon 'file path)
-                (propertize (format "%-28s "
+                (propertize (format (format "%%-%ds " rsr/agent-sessions--attachment-width)
                                     (file-name-nondirectory (directory-file-name path)))
                             'font-lock-face 'rsr/agent-session-file-name)
                 (propertize (or (plist-get file :label)
@@ -3953,6 +3984,15 @@ up its group through the enclosing worktree section."
     (setq rsr/agent-sessions--row-status nil)
     (magit-insert-section (rsr/agent-sessions-root)
       (let ((entries (rsr/agent-sessions--live-entries)))
+        (setq rsr/agent-sessions--state-width
+              (let ((widest (apply #'max 0
+                                   (mapcar (lambda (entry)
+                                             (length
+                                              (or (rsr/agent-sessions--session-state
+                                                   (plist-get entry :session))
+                                                  "")))
+                                           entries))))
+                (if (zerop widest) 0 (1+ widest))))
         (setq rsr/agent-sessions--worktree-column-width
               (1+ (apply #'max 0
                          (mapcar (lambda (entry)
