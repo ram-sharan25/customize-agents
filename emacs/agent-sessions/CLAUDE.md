@@ -123,8 +123,28 @@ so it and `C-x k` land in the same place.
 | `emacs-exit` | `kill-emacs-hook` | Emacs quit with it running |
 | `crash` | nothing — found open at the next startup | Emacs died |
 
-`R` offers the first three ("you ended it"), restore-previous the last two
-("it was taken from you"). **Crash detection asks whether the owning Emacs is
+restore-previous offers only the last two ("it was taken from you"), as one
+batch. `R` lists every ended session and shows the ending as a note, so the
+reason never hides a session from it.
+
+**The `R` picker shows what a session was about, from what is already keyed
+to it.** The log only has a worktree label and the agent's last title, which
+is missing for an unused session and repeated for workflow stages
+(`plan-implementation`). So each line adds the workflow state and the start of
+the agent session id, and the annotation the Plans folder, code folders and
+note — all read through the same `--session-note-keys` lookups the dashboard
+uses, with a stand-in session holding just the agent id. The id is not
+decoration: the picker looks the choice up by the line's text, and before it
+was there two sessions with the same label and title collapsed into one line,
+leaving the other unreachable. A session with nothing to resume is dimmed, not
+hidden, so the list still accounts for everything the log knows. The list is
+unfiltered; `C-c C-r` inside it narrows to one repo and widens again, an opt-in
+lens rather than a default that hides sessions. The table declares an identity
+sort, or a completion UI sorting by history or length would undo newest-first. A
+`t` rename is written to the log at once (`--log-title`) rather than at the
+next hook, so a session renamed and closed straight away keeps its new name;
+the agent's own title changes still wait for a hook, because they include a
+spinner that would otherwise write on every frame. **Crash detection asks whether the owning Emacs is
 still running.** A row left open belongs to a dead Emacs only if the pid at the
 front of its terminal id (`PID-COUNTER`) no longer names a running Emacs. The
 first version assumed a single Emacs and reaped every open row, and a second
