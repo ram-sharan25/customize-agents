@@ -2,7 +2,7 @@
 
 ;; The planning workflow's Emacs side: the `C-c i w' keys that open a session
 ;; with a stage skill loaded (top-level, or as a child of a session), bring-in
-;; of a child's findings, and the dashboard's `o' menu (open a session's code
+;; of a child's findings, and the dashboard's `O' menu (open a session's code
 ;; or Plans folder).  Kept out of agent-sessions.el, which is the dashboard
 ;; itself; this file only adds commands that use it.  Sessions are opened by
 ;; the core launcher, bin/agent-launch, so the keys and the agents' own
@@ -258,7 +258,7 @@ session as if the user had."
 (define-key rsr/agent-sessions-mode-map (kbd "c") rsr/agent-workflow-child-map)
 (define-key rsr/agent-sessions-mode-map (kbd "y") #'rsr/agent-workflow-bring-in)
 
-;;;; `o': open the code or Plans folder of the thing at point
+;;;; `O': open the code or Plans folder of the thing at point
 
 (defun rsr/agent-workflow--sessions-under (section)
   "Sessions of every row inside SECTION, at any depth, in display order."
@@ -436,7 +436,8 @@ it; with none on a heading, say so and open nothing."
          (rsr/agent-workflow--open-dir kind dir))))
     (_ (message nil))))
 
-(define-key rsr/agent-sessions-mode-map (kbd "o") #'rsr/agent-workflow-open-menu)
+;; Capital: `o' is the dashboard's "open in other window", as in dired.
+(define-key rsr/agent-sessions-mode-map (kbd "O") #'rsr/agent-workflow-open-menu)
 
 (provide 'agent-workflow)
 ;;; agent-workflow.el ends here

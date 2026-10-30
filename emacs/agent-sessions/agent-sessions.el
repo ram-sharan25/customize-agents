@@ -1893,7 +1893,7 @@ order (e.g. for buffers with no creation stamp)."
        PRIMARY KEY (owner_kind, owner_key, url))"
 
     ;; Folders a workflow stage registered for its session: the task's Plans
-    ;; folder and its code folder(s).  They are not rendered as rows; `o' on
+    ;; folder and its code folder(s).  They are not rendered as rows; `O' on
     ;; the dashboard opens them (agent-workflow.el).
     "CREATE TABLE IF NOT EXISTS registered_folders (
        owner_kind  TEXT    NOT NULL,
@@ -3593,7 +3593,7 @@ task may span several repositories, so code folders accumulate, each once."
                                                   agent-session-id)
   "Register PATH as the KIND folder of the session in terminal SESSION-ID.
 The `emacs-share folder' entry point: a workflow stage tells the dashboard
-where its task's Plans folder and code live, so `o' can open them without
+where its task's Plans folder and code live, so `O' can open them without
 guessing.  KIND is \"plans\" or \"code\".  SESSION-ID and AGENT-SESSION-ID
 resolve as in `rsr/agent-sessions-share-link'.  Returns a printable status."
   (let ((session (rsr/agent-sessions--session-for-share

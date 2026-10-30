@@ -85,7 +85,7 @@
                                   "t4" "code" "/no/such/dir/anywhere"))))
       (should-not (rsr/agent-sessions--session-folder-paths session "code")))))
 
-;;;; The `o' menu
+;;;; The `O' menu
 
 (defmacro rsr/agent-workflow-test--at-section (type value &rest body)
   "Run BODY with point on a dashboard section of TYPE holding VALUE."
@@ -311,8 +311,8 @@ sessions under it registered, and asks when there are several."
             (should (equal (sort offered #'string<) (sort (list a b) #'string<)))
             (should (equal opened (list (list 'magit b))))))))))
 
-(ert-deftest rsr/agent-workflow-o-is-bound-on-the-dashboard ()
-  (should (eq (lookup-key rsr/agent-sessions-mode-map (kbd "o"))
+(ert-deftest rsr/agent-workflow-O-is-bound-on-the-dashboard ()
+  (should (eq (lookup-key rsr/agent-sessions-mode-map (kbd "O"))
               #'rsr/agent-workflow-open-menu)))
 
 ;;;; Launch keys (`C-c i w', dashboard `c' and `y')

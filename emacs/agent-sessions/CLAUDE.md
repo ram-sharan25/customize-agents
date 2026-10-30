@@ -799,8 +799,9 @@ an explicit `M-x`. Point users there rather than editing the JSON by hand.
 
 `agent-workflow.el` holds the planning workflow's commands: the `C-c i w`
 map (bound in `~/.emacs.d/modules/personal/ai-sessions-config.el`), the
-dashboard's `c` (child of the row's session), `y` (bring in) and `o` (open
-the row's code or Plans folder). It is a separate file because it only *uses*
+dashboard's `c` (child of the row's session), `y` (bring in) and `O` (open
+the row's code or Plans folder; capital because `o` is the dashboard's
+"open in other window", as in dired). It is a separate file because it only *uses*
 the dashboard: everything it needs from `agent-sessions.el` is a public
 entry point or a small helper, and keeping it out stops the 6,800-line
 dashboard file from absorbing a workflow that may change on its own schedule.
