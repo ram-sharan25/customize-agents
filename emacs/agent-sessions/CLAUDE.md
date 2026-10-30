@@ -56,6 +56,13 @@ it, never inside it; and the composer checks read the window with
 `capture-pane -e`, turning faint runs into a face so inline completions still
 read as not-a-draft.
 
+**Opening never splits behind your back.** `rsr/agent-tmux-other-window-action`
+replaces the window beside the dashboard. Called from an ordinary window with
+no other beside it (a notification click, an Org link, a new terminal), its
+`inhibit-same-window` left nothing usable and Emacs split; the selected window
+is used then, and also when it already shows the buffer (otherwise a second
+copy appeared beside it).
+
 **The per-buffer id is the identity, not the agent's own session id.** Sessions
 sharing a worktree must still resolve to the right buffer, and the agent's own
 UUID isn't known until a hook fires (and isn't in every payload). So the stable

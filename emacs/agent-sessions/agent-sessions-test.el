@@ -563,6 +563,44 @@ terminal's registry entry afterwards."
       (mapc #'kill-buffer (list one two))
       (kill-buffer rsr/agent-sessions-buffer-name))))
 
+(ert-deftest rsr/agent-sessions-opening-from-a-lone-window-replaces-it ()
+  "From the only ordinary window (a notification click): no split."
+  (let ((buf (get-buffer-create " *lone-test*")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (pop-to-buffer buf rsr/agent-tmux-other-window-action)
+          (should (= (length (window-list)) 1))
+          (should (eq (window-buffer (selected-window)) buf)))
+      (kill-buffer buf))))
+
+(ert-deftest rsr/agent-sessions-opening-a-buffer-shown-here-makes-no-copy ()
+  "From a window already showing the buffer, with another beside it: stay."
+  (let ((buf (get-buffer-create " *shown-test*")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (switch-to-buffer buf)
+          (set-window-buffer (split-window-right) (get-buffer-create "*scratch*"))
+          (pop-to-buffer buf rsr/agent-tmux-other-window-action)
+          (should (= (length (get-buffer-window-list buf)) 1))
+          (should (eq (window-buffer (selected-window)) buf)))
+      (kill-buffer buf))))
+
+(ert-deftest rsr/agent-sessions-opening-from-a-window-with-another-uses-the-other ()
+  "From an ordinary window with another beside it: the other, as before."
+  (let ((buf (get-buffer-create " *other-test*")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (let ((here (selected-window))
+                (other (split-window-right)))
+            (pop-to-buffer buf rsr/agent-tmux-other-window-action)
+            (should (= (length (window-list)) 2))
+            (should (eq (window-buffer other) buf))
+            (should-not (eq (window-buffer here) buf))))
+      (kill-buffer buf))))
+
 (ert-deftest rsr/agent-sessions-list-opens-in-side-window ()
   (let ((rsr/agent-sessions-display-side 'left)
         (rsr/agent-sessions-window-width 45)

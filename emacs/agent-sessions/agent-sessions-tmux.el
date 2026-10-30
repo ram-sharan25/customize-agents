@@ -187,14 +187,31 @@ workspace.  Elsewhere: a session name read from the user, and DIR."
 (defvar ghostel--pid)
 
 (defconst rsr/agent-tmux-other-window-action
-  '((display-buffer-reuse-window display-buffer-use-some-window)
+  '((display-buffer-reuse-window
+     rsr/agent-tmux--display-buffer-in-selected-window
+     display-buffer-use-some-window)
     (inhibit-same-window . t)
     (some-window . mru))
   "How a session, its file or its link is shown from the dashboard.
 Reuse a window already showing the buffer, else replace the most recently used
 other window; never split.  The dashboard sits in a side window, which
 `display-buffer' will not reuse, so its default action split the frame anew
-on every open.")
+on every open.  From an ordinary window with no other beside it (a
+notification click, an Org link, a new terminal), there is no other window,
+so the selected one is used rather than split.")
+
+(defun rsr/agent-tmux--display-buffer-in-selected-window (buffer alist)
+  "`display-buffer' action: the selected window, when nothing else will do.
+That is when it already shows BUFFER, or is the only ordinary window in the
+frame.  `inhibit-same-window' would otherwise put a second copy of BUFFER
+beside it, or split it.  The dashboard's side window is never used."
+  (let ((window (selected-window)))
+    (when (and (not (window-parameter window 'window-side))
+               (not (window-dedicated-p window))
+               (not (window-minibuffer-p window))
+               (or (eq (window-buffer window) buffer)
+                   (not (get-mru-window nil nil t))))
+      (window--display-buffer buffer window 'reuse alist))))
 
 (defun rsr/agent-tmux-show (session dir &optional display)
   "Show SESSION in its ghostel buffer, attaching to it as needed.
