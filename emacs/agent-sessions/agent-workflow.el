@@ -305,13 +305,85 @@ empty."
                                       (rsr/agent-workflow--sessions-under
                                        section)))))))
       (_
-       (let* ((row (if (and section (eq (oref section type) 'rsr/agent-session-row))
-                       section
-                     (rsr/agent-sessions--enclosing-section 'rsr/agent-session-row)))
-              (session (and row (rsr/agent-sessions--session-for-id (oref row value)))))
+       (let ((session (rsr/agent-workflow--row-session)))
          (and session
               (seq-filter #'file-directory-p
                           (rsr/agent-sessions--session-folder-paths session kind))))))))
+
+(defun rsr/agent-workflow--row-session ()
+  "The session of the row at point, or of the row a note at point is under."
+  (let* ((section (magit-current-section))
+         (row (if (and section (eq (oref section type) 'rsr/agent-session-row))
+                  section
+                (rsr/agent-sessions--enclosing-section 'rsr/agent-session-row))))
+    (and row (rsr/agent-sessions--session-for-id (oref row value)))))
+
+;;;; Assigning a folder by hand (`O C', `O P', or `O c'/`O p' with none known)
+
+(defconst rsr/agent-workflow-type-path-choice "[type a path]"
+  "The folder choice that falls back to reading a directory name.")
+
+(defvar projectile-known-projects)
+(defvar magit-repository-directories)
+(declare-function magit-list-repos "magit-repos")
+
+(defun rsr/agent-workflow--code-candidates ()
+  "Repositories to offer as a code folder, each once, as directory names.
+Projectile's known projects, magit's `magit-repository-directories' scan,
+the repositories of sessions on the dashboard, and every code folder any
+session has registered.  Directories that no longer exist are dropped."
+  (let (dirs)
+    (dolist (dir (bound-and-true-p projectile-known-projects))
+      (push dir dirs))
+    (when (and (bound-and-true-p magit-repository-directories)
+               (require 'magit-repos nil t))
+      (dolist (dir (magit-list-repos)) (push dir dirs)))
+    (maphash (lambda (_id session)
+               (when-let* ((root (plist-get session :repo-root)))
+                 (push root dirs)))
+             rsr/agent-sessions)
+    (maphash (lambda (key paths)
+               (when (equal (cdr key) "code")
+                 (dolist (path paths) (push path dirs))))
+             (rsr/agent-sessions--registered-folders-table))
+    (seq-filter #'file-directory-p
+                (seq-uniq (mapcar (lambda (dir)
+                                    (file-name-as-directory (expand-file-name dir)))
+                                  (nreverse dirs))))))
+
+(defun rsr/agent-workflow--read-folder (kind)
+  "Ask for a KIND folder and return it as an absolute directory name.
+Plans offers the task folders, code the repositories of
+`rsr/agent-workflow--code-candidates'; both end with a choice to type a path."
+  (let* ((root (file-name-as-directory rsr/agent-workflow-plans-directory))
+         (choices (if (equal kind "plans")
+                      (mapcar (lambda (task) (cons task (expand-file-name task root)))
+                              (rsr/agent-workflow--tasks))
+                    (mapcar (lambda (dir) (cons (abbreviate-file-name dir) dir))
+                            (rsr/agent-workflow--code-candidates))))
+         (choice (completing-read
+                  (format "Assign %s folder: " (if (equal kind "code") "code" "Plans"))
+                  (append choices (list rsr/agent-workflow-type-path-choice))
+                  nil t)))
+    (file-name-as-directory
+     (expand-file-name
+      (if (equal choice rsr/agent-workflow-type-path-choice)
+          (read-directory-name "Folder: " (and (equal kind "plans") root) nil t)
+        (cdr (assoc choice choices)))))))
+
+(defun rsr/agent-workflow-assign-folder (kind)
+  "Ask for a KIND folder, register it for the session at point, return it.
+The same registration `emacs-share folder' makes, so the agent and the user
+both write it and the last one wins: a Plans folder replaces the old one, a
+code folder is added.  Only a session row has one session to register on, so
+anywhere else this says so and returns nil."
+  (let ((session (rsr/agent-workflow--row-session)))
+    (if (null session)
+        (progn (message "Assign a %s folder on a session row" kind) nil)
+      (let ((dir (rsr/agent-workflow--read-folder kind)))
+        (rsr/agent-sessions--register-folder session kind dir)
+        (rsr/agent-sessions--refresh-if-visible)
+        dir))))
 
 (defun rsr/agent-workflow--select-main-window ()
   "Leave the dashboard's side window for the window beside it.
@@ -323,33 +395,45 @@ replace what it shows.  An ordinary dashboard window is left selected."
       (when (window-live-p main)
         (select-window main)))))
 
+(defun rsr/agent-workflow--open-dir (kind dir)
+  "Open DIR as a KIND folder: code in magit, plans in dired.
+From the side-window dashboard it replaces the window beside it rather than
+splitting it."
+  (rsr/agent-workflow--select-main-window)
+  (if (equal kind "code") (magit-status dir) (dired dir)))
+
 (defun rsr/agent-workflow-open-folder (kind)
   "Open the KIND folder of the thing at point: code in magit, plans in dired.
 With several code folders (a task spanning repositories), ask which one; never
-pick for the user.  With none, say so and open nothing.  From the side-window
-dashboard the folder replaces the window beside it rather than splitting it."
+pick for the user.  With none on a session row, offer to assign one and open
+it; with none on a heading, say so and open nothing."
   (let* ((dirs (rsr/agent-workflow--folders-at-point kind))
          (dir (if (cdr dirs)
                   (completing-read (format "Open which %s folder? " kind) dirs nil t)
                 (car dirs))))
     (cond
-     ((null dir)
-      (message "No %s folder known here (a workflow stage registers it with `emacs-share folder %s')"
-               (if (equal kind "code") "code" "Plans") kind))
-     ((equal kind "code")
-      (rsr/agent-workflow--select-main-window)
-      (magit-status dir))
+     (dir (rsr/agent-workflow--open-dir kind dir))
+     ((rsr/agent-workflow--row-session)
+      (when-let* ((dir (rsr/agent-workflow-assign-folder kind)))
+        (rsr/agent-workflow--open-dir kind dir)))
      (t
-      (rsr/agent-workflow--select-main-window)
-      (dired dir)))))
+      (message "No %s folder known here; assign one on a session row with `O %s'"
+               (if (equal kind "code") "code" "Plans")
+               (if (equal kind "code") "C" "P"))))))
 
 (defun rsr/agent-workflow-open-menu ()
-  "Open the code (`c', in magit) or Plans folder (`p', in dired) at point."
+  "Open the code (`c', in magit) or Plans folder (`p', in dired) at point.
+`C' and `P' assign one to the session at point first, even when it has one."
   (interactive)
-  (pcase (read-char-choice "Open: [c] code in magit  [p] Plans folder in dired  "
-                           '(?c ?p ?q ?\C-g))
+  (pcase (read-char-choice
+          "Open: [c] code in magit  [p] Plans in dired  [C/P] assign then open  "
+          '(?c ?p ?C ?P ?q ?\C-g))
     (?c (rsr/agent-workflow-open-folder "code"))
     (?p (rsr/agent-workflow-open-folder "plans"))
+    ((and key (or ?C ?P))
+     (let ((kind (if (eq key ?C) "code" "plans")))
+       (when-let* ((dir (rsr/agent-workflow-assign-folder kind)))
+         (rsr/agent-workflow--open-dir kind dir))))
     (_ (message nil))))
 
 (define-key rsr/agent-sessions-mode-map (kbd "o") #'rsr/agent-workflow-open-menu)

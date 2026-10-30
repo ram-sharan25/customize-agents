@@ -4,6 +4,9 @@
 (require 'agent-sessions)
 (require 'agent-workflow)
 
+(defvar projectile-known-projects)
+(defvar magit-repository-directories)
+
 (defmacro rsr/agent-workflow-test--with-db (&rest body)
   "Run BODY with an isolated database and empty folder registrations."
   (declare (indent 0) (debug t))
@@ -199,18 +202,93 @@ sessions under it registered, and asks when there are several."
             (should (equal (reverse opened)
                            (list (list 'magit code) (list 'dired plans-b))))))))))
 
-(ert-deftest rsr/agent-workflow-open-menu-unknown-folder-only-messages ()
-  "A planning session with nothing registered opens nothing (Review focus 1)."
+(ert-deftest rsr/agent-workflow-open-menu-unknown-folder-on-heading-only-messages ()
+  "A heading that is not a repo, with no session folders, opens nothing."
+  (let ((dir (file-name-as-directory (make-temp-file "plans-cwd-" t))))
+    (rsr/agent-workflow-test--with-db
+      (rsr/agent-workflow-test--at-section 'rsr/agent-session-worktree (list :path dir)
+        (rsr/agent-workflow-test--recording-openers
+          (cl-letf (((symbol-function 'completing-read)
+                     (lambda (&rest _) (error "Should not ask"))))
+            (rsr/agent-workflow-open-folder "code")
+            (rsr/agent-workflow-open-folder "plans"))
+          (should (= (length opened) 2))
+          (should (seq-every-p (lambda (e) (eq (car e) 'message)) opened)))))))
+
+(ert-deftest rsr/agent-workflow-open-menu-unknown-folder-assigns-then-opens ()
+  "A session with nothing registered asks for a folder, keeps it, opens it."
   (rsr/agent-workflow-test--with-db
-    (let ((session (list :agent-session-id "thread-o2" :dir "/tmp/")))
+    (let* ((session (list :agent-session-id "thread-o2" :dir "/tmp/"))
+           (root (file-name-as-directory (make-temp-file "plans-root-" t)))
+           (task (expand-file-name "proj/task/" root))
+           (code (file-name-as-directory (make-temp-file "code-" t)))
+           (rsr/agent-workflow-plans-directory root)
+           (projectile-known-projects (list (abbreviate-file-name code)))
+           (magit-repository-directories nil)
+           (rsr/agent-sessions (make-hash-table :test 'equal))
+           offered)
+      (make-directory task t)
+      (write-region "" nil (expand-file-name "plan.org" task))
       (cl-letf (((symbol-function 'rsr/agent-sessions--session-for-id)
-                 (lambda (_) session)))
+                 (lambda (_) session))
+                ((symbol-function 'rsr/agent-sessions--refresh-if-visible) #'ignore)
+                ((symbol-function 'completing-read)
+                 (lambda (_prompt collection &rest _)
+                   (let ((names (all-completions "" collection)))
+                     (push names offered)
+                     (car names)))))
         (rsr/agent-workflow-test--at-section 'rsr/agent-session-row "t-o2"
           (rsr/agent-workflow-test--recording-openers
             (rsr/agent-workflow-open-folder "code")
             (rsr/agent-workflow-open-folder "plans")
-            (should (= (length opened) 2))
-            (should (seq-every-p (lambda (e) (eq (car e) 'message)) opened))))))))
+            (should (equal (reverse offered)
+                           (list (list (abbreviate-file-name code)
+                                       rsr/agent-workflow-type-path-choice)
+                                 (list "proj/task"
+                                       rsr/agent-workflow-type-path-choice))))
+            (should (equal (reverse opened)
+                           (list (list 'magit code) (list 'dired task))))
+            (should (equal (rsr/agent-sessions--session-folder-paths session "code")
+                           (list code)))
+            (should (equal (rsr/agent-sessions--session-folder-paths session "plans")
+                           (list task)))))))))
+
+(ert-deftest rsr/agent-workflow-open-menu-capital-assigns-even-when-known ()
+  "`C' adds another code folder; `P' replaces the Plans folder."
+  (rsr/agent-workflow-test--with-db
+    (let* ((session (list :agent-session-id "thread-o4"))
+           (a (file-name-as-directory (make-temp-file "code-a-" t)))
+           (b (file-name-as-directory (make-temp-file "code-b-" t)))
+           (old (file-name-as-directory (make-temp-file "plans-old-" t)))
+           (new (file-name-as-directory (make-temp-file "plans-new-" t)))
+           (keys (list ?C ?P))
+           (dirs (list b new)))
+      (rsr/agent-sessions--register-folder session "code" a)
+      (rsr/agent-sessions--register-folder session "plans" old)
+      (cl-letf (((symbol-function 'rsr/agent-sessions--session-for-id)
+                 (lambda (_) session))
+                ((symbol-function 'rsr/agent-sessions--refresh-if-visible) #'ignore)
+                ((symbol-function 'read-char-choice) (lambda (&rest _) (pop keys)))
+                ((symbol-function 'completing-read)
+                 (lambda (&rest _) rsr/agent-workflow-type-path-choice))
+                ((symbol-function 'read-directory-name) (lambda (&rest _) (pop dirs))))
+        (rsr/agent-workflow-test--at-section 'rsr/agent-session-row "t-o4"
+          (rsr/agent-workflow-test--recording-openers
+            (rsr/agent-workflow-open-menu)
+            (rsr/agent-workflow-open-menu)
+            (should (equal (reverse opened)
+                           (list (list 'magit b) (list 'dired new))))
+            (should (equal (rsr/agent-sessions--session-folder-paths session "code")
+                           (list a b)))
+            (should (equal (rsr/agent-sessions--session-folder-paths session "plans")
+                           (list new)))))))))
+
+(ert-deftest rsr/agent-workflow-assign-folder-refuses-a-heading ()
+  (rsr/agent-workflow-test--with-db
+    (rsr/agent-workflow-test--at-section 'rsr/agent-session-repo (list :root "/tmp/")
+      (rsr/agent-workflow-test--recording-openers
+        (should-not (rsr/agent-workflow-assign-folder "code"))
+        (should (eq (car (car opened)) 'message))))))
 
 (ert-deftest rsr/agent-workflow-open-menu-asks-between-code-folders ()
   "Two registered repositories: ask, open only the one chosen (Review focus 2)."
