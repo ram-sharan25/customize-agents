@@ -4908,7 +4908,7 @@ A name matching no folder creates one in REPO."
           folder (read-string "Folder name: " (plist-get folder :name)))
          (rsr/agent-sessions--refresh))
         ("Delete folder"
-         (when (yes-or-no-p
+         (when (y-or-n-p
                 (format "Delete folder %s and unassign its sessions? "
                         (plist-get folder :name)))
            (rsr/agent-sessions--folder-delete folder)
@@ -5947,7 +5947,7 @@ is spawned."
                          (plist-get r :worktree))))
         (when unused
           (princ (format "\nNever used, nothing to resume: %d\n" (length unused)))))
-      (when (yes-or-no-p (format "Restore %d session(s)? " (length todo)))
+      (when (y-or-n-p (format "Restore %d session(s)? " (length todo)))
         ;; Staggered: each spawns a terminal and types into it, and firing them
         ;; all in one go leaves the shells racing their own startup.
         (let ((n 0))
