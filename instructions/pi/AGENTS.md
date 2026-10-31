@@ -4,4 +4,4 @@ Shared rules for every agent (git, answer depth, planning lifecycle, install loc
 
 ## Pi configuration
 
-Pi's home is `/Users/rrimal/.pi/agent/`; Pi's own data (sessions, auth, trust, caches, installed packages) lives there. Its shared configuration — these instructions, `settings.json`, skills, extensions, and prompts — lives in `/Users/rrimal/Stillness/Development/customize-agents/` and is linked into Pi's home one hop deep. Edit the repo copy; never create a second copy, and keep `~/.config` free of agent configuration.
+Pi's home is `~/.pi/agent/`; Pi's own data (sessions, auth, trust, caches, installed packages) lives there. Shared configuration belongs in the `customize-agents` repository, normally at `~/Stillness/Development/customize-agents/`, and is linked into Pi's home one hop deep. Resolve installed symlinks to locate the source repository. Edit the repo copy; never create a second copy, and keep `~/.config` free of agent configuration.

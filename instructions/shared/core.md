@@ -73,13 +73,14 @@ The stages, in order, each its own skill: `clarify-requirements`,
 `implement-plan`, `review-implementation` (plus the `fix-bug` and
 `explore-session` children). Each stage's rules live only in its skill, and
 the rules they share live in
-`/Users/rrimal/Stillness/Development/customize-agents/instructions/shared/workflow-conventions.md`;
+`instructions/shared/workflow-conventions.md` in the `customize-agents` repository
+(normally `~/Stillness/Development/customize-agents/`);
 follow those, not a summary here. Run on their own, the stages each run in a
 fresh session the user starts; `issue-workflow` runs the same stage skills in
 one session, with the user approving each gate. Implementation needs an
 explicit request to implement; the preflight lives in `implement-plan`.
 
-Planning documents live in `/Users/rrimal/Stillness/Agent_Stuffs/Plans/`,
+Planning documents live in `~/Stillness/Agent_Stuffs/Plans/`,
 never in an implementation repository.
 
 ## Code folder in the Emacs dashboard

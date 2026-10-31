@@ -17,7 +17,7 @@ order=$(grep -oE '`(clarify-requirements|review-requirements|plan-implementation
 require_regex "$f" "rules live (only )?in (its|the) (stage )?skill"
 require_text "$f" "issue-workflow"
 require_regex "$f" "fresh session"
-require_text "$f" "/Users/rrimal/Stillness/Agent_Stuffs/Plans/"
+require_text "$f" "~/Stillness/Agent_Stuffs/Plans/"
 require_text "$f" "workflow-conventions.md"
 
 # The other sections, word for word as at the baseline.
