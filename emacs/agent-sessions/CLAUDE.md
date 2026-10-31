@@ -318,7 +318,10 @@ uses only keys that are stable under activity: a coarse attention bucket
 (error → needs-attention → running → rest), then buffer creation time, then
 buffer name as a deterministic final tie-break (hash iteration order must never
 leak into the layout). A row *does* move when its status changes — that's a
-rare, meaningful event, unlike a tool call. Repos and worktrees are alphabetical.
+rare, meaningful event, unlike a tool call. `S`
+(`rsr/agent-sessions-sort-by-attention`) drops the attention bucket for anyone
+who would rather rows never move at all; then only creation order remains.
+Repos and worktrees are alphabetical.
 Folder view rows start with a dynamically sized worktree column. Recency sort
 survives behind `s`
 for when you want it; don't make it the default again.
@@ -339,7 +342,11 @@ would fight, and recency should stay a temporary lens.
 
 **Folders belong to repos.** The default view is repo → worktree → session, with
 the session's folder shown on its row. `f` gives repo → folder → session,
-including a No folder group under each repo. Folder view rows put the worktree
+with sessions in no folder listed directly under the repo, before its folders
+and with no heading: a "No folder" heading was noise, alone under every repo
+that had no folders, and rows placed after the folders would read as the last
+folder's. Their headingless section stays (value nil), as a `:flat` worktree's
+does, so `+` and reordering still find the group. Folder view rows put the worktree
 name first and the branch after the title; the non-folder view has neither on
 session rows because its worktree heading provides that context. `Shift+TAB`
 advances one

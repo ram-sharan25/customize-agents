@@ -112,7 +112,8 @@
                   (rsr/agent-sessions--refresh)
                   (should (string-match-p "sample-repo\n  Tasks (1)"
                                           (buffer-string)))
-                  (should (string-match-p "No folder (0)" (buffer-string)))
+                  ;; No session is outside a folder, so nothing stands for one.
+                  (should-not (string-match-p "No folder" (buffer-string)))
                   ;; The `@' column names the branch, so no trailing copy.
                   (should (string-match-p "@feature/test +.*Task$"
                                           (buffer-string))))
@@ -147,6 +148,49 @@
                   (rsr/agent-sessions--refresh)
                   (should (= rsr/agent-sessions--overview-level 2))))))
         (mapc #'kill-buffer (list terminal dashboard))
+        (delete-directory root t)))))
+
+(ert-deftest rsr/folders-unassigned-sessions-sit-under-the-repo ()
+  "A session in no folder renders under the repo, before the folders."
+  (rsr/folder-test-with-db
+    (let* ((root (make-temp-file "repo-loose-" t))
+           (repo (rsr/agent-sessions--canonical-path root))
+           (a (generate-new-buffer " *loose-a*"))
+           (b (generate-new-buffer " *loose-b*"))
+           (dashboard (generate-new-buffer " *loose-dashboard*"))
+           (rsr/agent-sessions-icons nil)
+           (folder (rsr/agent-sessions--folder-create "Tasks" repo))
+           (filed (list :buffer a :repo "repo" :repo-root root
+                        :worktree-name "wt" :worktree-path root
+                        :agent-session-id "filed"))
+           (loose (list :buffer b :repo "repo" :repo-root root
+                        :worktree-name "wt" :worktree-path root
+                        :agent-session-id "loose"))
+           (entries (list (list :id "filed" :title "Filed task" :session filed)
+                          (list :id "loose" :title "Loose task" :session loose))))
+      (unwind-protect
+          (progn
+            (rsr/agent-sessions--folder-set filed (plist-get folder :id))
+            (with-current-buffer dashboard
+              (rsr/agent-sessions-mode)
+              (let ((rsr/agent-sessions-group-by-folder t))
+                (cl-letf (((symbol-function 'rsr/agent-sessions--live-entries)
+                           (lambda () entries)))
+                  (rsr/agent-sessions--refresh)
+                  (should-not (string-match-p "No folder" (buffer-string)))
+                  (should (string-match-p
+                           "^repo\n    .*Loose task\n  Tasks (1)\n    .*Filed task"
+                           (buffer-string)))
+                  ;; The loose row folds with the repo's children, as a
+                  ;; headingless group has no line of its own to fold to.
+                  (setq rsr/agent-sessions--overview-level 1)
+                  (rsr/agent-sessions--show-overview-level 1)
+                  (let* ((repo-section (car (oref magit-root-section children)))
+                         (loose-group (car (oref repo-section children))))
+                    (should-not (oref loose-group value))
+                    (should-not (oref loose-group hidden))
+                    (should (oref (car (oref loose-group children)) hidden)))))))
+        (mapc #'kill-buffer (list a b dashboard))
         (delete-directory root t)))))
 
 (ert-deftest rsr/folders-worktree-column-follows-longest-name ()

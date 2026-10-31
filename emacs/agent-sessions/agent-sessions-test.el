@@ -319,6 +319,29 @@ terminal's registry entry afterwards."
                      (face-attribute 'rsr/agent-session-state-implementing
                                      :foreground))))
 
+(ert-deftest rsr/agent-sessions-attention-sort-can-be-turned-off ()
+  "With attention sorting off, a waiting row keeps its place."
+  (let* ((older (generate-new-buffer " *sort-a*"))
+         (newer (generate-new-buffer " *sort-b*"))
+         (entries (list (list :id "a" :session (list :buffer older :status 'stopped))
+                        (list :id "b" :session (list :buffer newer
+                                                     :status 'needs-attention))))
+         (ids (lambda (es) (mapcar (lambda (e) (plist-get e :id)) es))))
+    (unwind-protect
+        (progn
+          (with-current-buffer older
+            (setq-local rsr/agent-session--created-at '(0 1)))
+          (with-current-buffer newer
+            (setq-local rsr/agent-session--created-at '(0 2)))
+          (let ((rsr/agent-sessions-sort-by-attention t))
+            (should (equal (funcall ids (rsr/agent-sessions--sort-entries entries))
+                           '("b" "a"))))
+          (let ((rsr/agent-sessions-sort-by-attention nil))
+            (should (equal (funcall ids (rsr/agent-sessions--sort-entries entries))
+                           '("a" "b")))))
+      (kill-buffer older)
+      (kill-buffer newer))))
+
 (ert-deftest rsr/agent-sessions-tmux-agents-group-by-tmux-session ()
   "Non-git tmux agents group by session name; a repo agent stays with its repo."
   (rsr/agent-sessions-test--with-temp-db

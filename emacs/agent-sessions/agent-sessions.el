@@ -172,6 +172,15 @@ sessions running at once continually swap places in the dashboard.  The
 default is a stable alphabetical repo order with attention sorted sessions.
 Toggle with `s' \(`rsr/agent-sessions-toggle-sort').")
 
+(defcustom rsr/agent-sessions-sort-by-attention t
+  "When non-nil, the stable order lifts rows that need you to the top.
+Within a worktree or folder, rows then sort error, needs-attention, running,
+rest, and only then by age, so a row moves when its status changes.  When nil,
+rows keep their creation order and never move on their own.  Toggle with `S'
+\(`rsr/agent-sessions-toggle-attention-sort').  Has no effect while `s'
+\(activity order) is on."
+  :type 'boolean)
+
 (defvar rsr/agent-sessions-group-by-folder nil
   "When non-nil, display repo → folder → session.
 The other view displays repo → worktree → session.  Toggle with `f'.")
@@ -1742,6 +1751,8 @@ buckets carries information, whereas a row moving because a tool ran does not.")
 
 (defun rsr/agent-sessions--sort-entries (entries)
   "Sort ENTRIES by attention bucket, then oldest-first, then buffer name.
+The attention bucket is skipped when `rsr/agent-sessions-sort-by-attention'
+is nil, leaving creation order alone.
 Every key is stable under ordinary activity: unlike `:updated-at', none of
 them changes when a session merely runs a tool, so two busy sessions keep
 their positions instead of trading places on each hook event.  The buffer name
@@ -1749,8 +1760,12 @@ is the final tie-break so the order never depends on hash-table iteration
 order (e.g. for buffers with no creation stamp)."
   (sort (copy-sequence entries)
         (lambda (a b)
-          (let ((ra (rsr/agent-sessions--entry-rank a))
-                (rb (rsr/agent-sessions--entry-rank b)))
+          (let ((ra (if rsr/agent-sessions-sort-by-attention
+                        (rsr/agent-sessions--entry-rank a)
+                      0))
+                (rb (if rsr/agent-sessions-sort-by-attention
+                        (rsr/agent-sessions--entry-rank b)
+                      0)))
             (if (/= ra rb)
                 (< ra rb)
               (let ((ca (rsr/agent-sessions--entry-created a))
@@ -4087,18 +4102,22 @@ a git repo (a tmux group has no worktree to name)."
          (list (rsr/agent-sessions--worktree-note-key inline))
          "  "))
       (if rsr/agent-sessions-group-by-folder
-          (dolist (folder (rsr/agent-sessions--apply-manual-order
-                           (rsr/agent-sessions--folders-scope
-                            (rsr/agent-sessions--repo-key repo))
-                           #'rsr/agent-sessions--folder-key
-                           (append (sort (copy-sequence
-                                          (rsr/agent-sessions--folders-for-repo
-                                           (rsr/agent-sessions--repo-key repo)))
-                                         (lambda (a b)
-                                           (string-lessp (plist-get a :name)
-                                                         (plist-get b :name))))
-                                   (list (list :id nil :name "No folder")))))
-            (rsr/agent-sessions--insert-folder folder (plist-get repo :entries)))
+          (progn
+            ;; Sessions in no folder sit directly under the repo, before the
+            ;; folders: after them they would read as the last folder's rows.
+            (rsr/agent-sessions--insert-folder (list :id nil)
+                                               (plist-get repo :entries))
+            (dolist (folder (rsr/agent-sessions--apply-manual-order
+                             (rsr/agent-sessions--folders-scope
+                              (rsr/agent-sessions--repo-key repo))
+                             #'rsr/agent-sessions--folder-key
+                             (sort (copy-sequence
+                                    (rsr/agent-sessions--folders-for-repo
+                                     (rsr/agent-sessions--repo-key repo)))
+                                   (lambda (a b)
+                                     (string-lessp (plist-get a :name)
+                                                   (plist-get b :name))))))
+              (rsr/agent-sessions--insert-folder folder (plist-get repo :entries))))
         (when inline
           (rsr/agent-sessions--insert-worktree
            (plist-put (copy-sequence inline) :flat t)))
@@ -4116,25 +4135,28 @@ a git repo (a tmux group has no worktree to name)."
               entries))
 
 (defun rsr/agent-sessions--insert-folder (folder entries)
-  "Render FOLDER containing live ENTRIES within its repo."
+  "Render FOLDER containing live ENTRIES within its repo.
+The nil folder (sessions in no folder) gets no heading and is skipped when
+empty; its section is kept so `+' and reordering still find the group."
   (let* ((id (plist-get folder :id))
          (members (rsr/agent-sessions--folder-entries folder entries))
          (repo-key (rsr/agent-sessions--session-repo
                     (plist-get (car entries) :session))))
-    (magit-insert-section (rsr/agent-session-folder id)
-      (magit-insert-heading
-        "  "
-        (rsr/agent-sessions--icon 'folder)
-        (propertize (format "%s (%d)"
-                            (or (plist-get folder :name) "No folder")
-                            (length members))
-                    'font-lock-face 'magit-section-heading))
-      (rsr/agent-sessions--insert-entries
-       (if rsr/agent-sessions-sort-by-activity
-           members
-         (rsr/agent-sessions--apply-manual-order
-          (rsr/agent-sessions--folder-sessions-scope repo-key id)
-          #'rsr/agent-sessions--entry-buffer-name members))))))
+    (when (or id members)
+      (magit-insert-section (rsr/agent-session-folder id)
+        (when id
+          (magit-insert-heading
+            "  "
+            (rsr/agent-sessions--icon 'folder)
+            (propertize (format "%s (%d)" (plist-get folder :name)
+                                (length members))
+                        'font-lock-face 'magit-section-heading)))
+        (rsr/agent-sessions--insert-entries
+         (if rsr/agent-sessions-sort-by-activity
+             members
+           (rsr/agent-sessions--apply-manual-order
+            (rsr/agent-sessions--folder-sessions-scope repo-key id)
+            #'rsr/agent-sessions--entry-buffer-name members)))))))
 
 (defun rsr/agent-sessions--refresh ()
   (interactive)
@@ -4232,7 +4254,8 @@ a git repo (a tmux group has no worktree to name)."
     ;; depth and its rows fold with the repo's other children.
     ('rsr/agent-session-worktree
      (if (plist-get (oref section value) :flat) parent-depth 1))
-    ('rsr/agent-session-folder 1)
+    ;; Likewise the headingless group of sessions in no folder.
+    ('rsr/agent-session-folder (if (oref section value) 1 parent-depth))
     ('rsr/agent-session-row 2)
     ((or 'rsr/agent-session-file 'rsr/agent-session-link) 3)
     (_ parent-depth)))
@@ -5369,7 +5392,20 @@ trade places constantly; the stable order is the default for that reason."
   (message "Sorting by %s"
            (if rsr/agent-sessions-sort-by-activity
                "most recent activity"
-             "attention, then session age")))
+             (if rsr/agent-sessions-sort-by-attention
+                 "attention, then session age"
+               "session age"))))
+
+(defun rsr/agent-sessions-toggle-attention-sort ()
+  "Toggle whether rows that need attention move to the top of their group.
+Off, rows stay in creation order whatever their status."
+  (interactive)
+  (setq rsr/agent-sessions-sort-by-attention
+        (not rsr/agent-sessions-sort-by-attention))
+  (rsr/agent-sessions--refresh)
+  (message (if rsr/agent-sessions-sort-by-attention
+               "Rows needing attention move to the top"
+             "Rows keep a fixed order")))
 
 (defun rsr/agent-sessions--attention-p (status)
   (memq status '(needs-attention error)))
@@ -5420,12 +5456,11 @@ are exactly what the next render will order."
          (let ((folders (rsr/agent-sessions--apply-manual-order
                          (rsr/agent-sessions--folders-scope rkey)
                          #'rsr/agent-sessions--folder-key
-                         (append (sort (copy-sequence
-                                        (rsr/agent-sessions--folders-for-repo rkey))
-                                       (lambda (a b)
-                                         (string-lessp (plist-get a :name)
-                                                       (plist-get b :name))))
-                                 (list (list :id nil :name "No folder"))))))
+                         (sort (copy-sequence
+                                (rsr/agent-sessions--folders-for-repo rkey))
+                               (lambda (a b)
+                                 (string-lessp (plist-get a :name)
+                                               (plist-get b :name)))))))
            (list (rsr/agent-sessions--folders-scope rkey)
                  (mapcar #'rsr/agent-sessions--folder-key folders)
                  (format "%s" (or (oref section value) "none"))))))
@@ -7608,6 +7643,7 @@ out one that is already taken — or hide one that just became available."
 (define-key rsr/agent-sessions-mode-map (kbd "<S-tab>")
   #'rsr/agent-sessions-toggle-overview)
 (define-key rsr/agent-sessions-mode-map (kbd "s") #'rsr/agent-sessions-toggle-sort)
+(define-key rsr/agent-sessions-mode-map (kbd "S") #'rsr/agent-sessions-toggle-attention-sort)
 (define-key rsr/agent-sessions-mode-map (kbd "f") #'rsr/agent-sessions-toggle-folder-view)
 (define-key rsr/agent-sessions-mode-map (kbd "F") #'rsr/agent-sessions-folder-action)
 (define-key rsr/agent-sessions-mode-map (kbd "+") #'rsr/agent-sessions-new-vterm)
