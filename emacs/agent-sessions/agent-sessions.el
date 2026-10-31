@@ -125,7 +125,8 @@ have never fired a hook need the same key.  See
 
 (defvar-local rsr/agent-session--viewed-at nil
   "When the user most recently selected this terminal buffer.
-Used to order the agent picker shown by `rsr/agent-sessions-send-region'.")
+Used to order the agent picker shown by `rsr/agent-sessions-send-region',
+and as the history `rsr/agent-sessions-visit-last-agent' goes back through.")
 
 (defvar rsr/agent-sessions--last-focused-buffer nil
   "Buffer seen by the previous focus-hook run.
@@ -4558,6 +4559,38 @@ on-screen mark is moved here as well."
           (rsr/agent-sessions--pop-to-other-window buf)))
     (rsr/agent-sessions--mark-on-screen-soon)))
 
+(defun rsr/agent-sessions--last-agent-buffer ()
+  "The agent viewed before the one in front of the user, or nil.
+Agents are the live buffers of `rsr/agent-sessions' entries, so plain shells
+never count; recency is their `rsr/agent-session--viewed-at' stamp.  The newest is
+skipped only when it is the agent in front, which the focus hook records in
+`rsr/agent-sessions--last-focused-buffer' (for a *tmux: S*, the proxy of its
+current window); a shell or other buffer in front skips nothing."
+  (let* ((agents (delete-dups
+                  (seq-filter #'buffer-live-p
+                              (mapcar (lambda (session) (plist-get session :buffer))
+                                      (hash-table-values rsr/agent-sessions)))))
+         (viewed (sort (seq-filter (lambda (buf)
+                                     (buffer-local-value 'rsr/agent-session--viewed-at buf))
+                                   agents)
+                       (lambda (a b)
+                         (time-less-p (buffer-local-value 'rsr/agent-session--viewed-at b)
+                                      (buffer-local-value 'rsr/agent-session--viewed-at a))))))
+    (if (eq (car viewed) rsr/agent-sessions--last-focused-buffer)
+        (cadr viewed)
+      (car viewed))))
+
+(defun rsr/agent-sessions-visit-last-agent ()
+  "Show the agent viewed before the current one; again to toggle back.
+Unlike `previous-buffer' this goes by agent, not Emacs buffer: agents of one
+repository share a *tmux: S* buffer.  The agent replaces the selected window,
+see `rsr/agent-sessions--display-buffer-here'."
+  (interactive)
+  (if-let ((buf (rsr/agent-sessions--last-agent-buffer)))
+      (let ((display-buffer-overriding-action '(rsr/agent-sessions--display-buffer-here)))
+        (rsr/agent-sessions--show-terminal buf))
+    (message "No previous agent session")))
+
 (defun rsr/agent-sessions--pop-to-other-window (buf)
   "Select BUF in another window, reusing one rather than splitting.
 See `rsr/agent-tmux-other-window-action'."
@@ -4598,6 +4631,21 @@ nil, so the caller's action reuses that window without asking."
         (window--display-buffer buffer window
                                 (if (memq window before) 'reuse 'window)
                                 alist)))))
+
+(defun rsr/agent-sessions--display-buffer-here (buffer alist)
+  "`display-buffer' action for `C-c i l': BUFFER in the selected window.
+It replaces that window's buffer, as `previous-buffer' would.  A BUFFER
+already on screen keeps its window, since a second copy of the same terminal
+is no use.  From a side, dedicated or minibuffer window (the dashboard)
+return nil, so the caller's action picks a window instead."
+  (let* ((selected (selected-window))
+         (window (or (get-buffer-window buffer)
+                     (and (not (window-parameter selected 'window-side))
+                          (not (window-dedicated-p selected))
+                          (not (window-minibuffer-p selected))
+                          selected))))
+    (when window
+      (window--display-buffer buffer window 'reuse alist))))
 
 (defun rsr/agent-sessions--display-buffer-in-ace-window (buffer alist)
   "`display-buffer' action for `o': show BUFFER in a window picked with ace-window.

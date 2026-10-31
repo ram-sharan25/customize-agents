@@ -2094,5 +2094,172 @@ variable loses it once the scheduling function returns."
         (rsr/agent-sessions--mark-on-screen-soon)
         (should forgot)))))
 
+;; C-c i l: back to the last agent
+
+(ert-deftest rsr/agent-sessions-display-here-reuses-a-showing-window ()
+  "A BUFFER already in the other window: that window, nothing replaced here."
+  (let ((buf (get-buffer-create " *here-shown-test*"))
+        (mine (get-buffer-create " *here-mine-test*")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (switch-to-buffer mine)
+          (let ((other (split-window-right)))
+            (set-window-buffer other buf)
+            (should (eq (rsr/agent-sessions--display-buffer-here buf nil) other))
+            (should (eq (window-buffer (selected-window)) mine))))
+      (mapc #'kill-buffer (list buf mine)))))
+
+(ert-deftest rsr/agent-sessions-display-here-uses-the-selected-window ()
+  "A BUFFER on no window replaces the selected window's buffer, like C-x <left>."
+  (let ((buf (get-buffer-create " *here-new-test*"))
+        (mine (get-buffer-create " *here-mine-test*")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (switch-to-buffer mine)
+          (set-window-buffer (split-window-right) (get-buffer-create "*scratch*"))
+          (should (eq (rsr/agent-sessions--display-buffer-here buf nil)
+                      (selected-window)))
+          (should (eq (window-buffer (selected-window)) buf)))
+      (mapc #'kill-buffer (list buf mine)))))
+
+(ert-deftest rsr/agent-sessions-display-here-declines-a-side-window ()
+  "From a side window (the dashboard) it declines, so the usual action applies."
+  (let ((buf (get-buffer-create " *here-new-test*"))
+        (side (get-buffer-create " *here-side-test*")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (select-window (display-buffer-in-side-window side '((side . left))))
+          (should-not (rsr/agent-sessions--display-buffer-here buf nil))
+          (should (eq (window-buffer (selected-window)) side)))
+      (mapc #'kill-buffer (list buf side)))))
+
+(defmacro rsr/agent-sessions-test--with-last-agent (&rest body)
+  "Run BODY with agents `x', `y', `z', a shell `s' and a *tmux: repo* `term'.
+`--show-terminal' is stubbed: it pushes (BUFFER . OVERRIDING-ACTION) onto
+`shown', stamps BUFFER and records it as focused, as the real path does.
+Set `rsr/agent-sessions--last-focused-buffer' to what is in front.  `stamp' sets a viewed time
+N seconds after the epoch, so every stamp is older than a press."
+  (declare (indent 0) (debug t))
+  `(let* ((rsr/agent-sessions (make-hash-table :test 'equal))
+          (rsr/agent-sessions--last-focused-buffer nil)
+          (rsr/agent-session-id->buffer (make-hash-table :test 'equal))
+          (x (get-buffer-create " *last-x*"))
+          (y (get-buffer-create " *last-y*"))
+          (z (get-buffer-create " *last-z*"))
+          (s (get-buffer-create " *last-s*"))
+          (term (get-buffer-create " *last-term*"))
+          (shown nil)
+          (stamp (lambda (buf n)
+                   (with-current-buffer buf
+                     (setq-local rsr/agent-session--viewed-at (seconds-to-time n))))))
+     (ignore stamp)
+     (unwind-protect
+         (save-window-excursion
+           (dolist (pair (list (cons "x" x) (cons "y" y) (cons "z" z) (cons "s" s)))
+             (with-current-buffer (cdr pair)
+               (setq-local rsr/agent-session-id (car pair)))
+             (puthash (car pair) (cdr pair) rsr/agent-session-id->buffer)
+             (unless (equal (car pair) "s")
+               (puthash (car pair) (list :buffer (cdr pair)) rsr/agent-sessions)))
+           (with-current-buffer term
+             (setq-local rsr/agent-tmux-session "repo"))
+           (delete-other-windows)
+           (switch-to-buffer term)
+           (cl-letf (((symbol-function 'rsr/agent-sessions--show-terminal)
+                      (lambda (buf &optional _display)
+                        (push (cons buf display-buffer-overriding-action) shown)
+                        (setq rsr/agent-sessions--last-focused-buffer buf)
+                        (with-current-buffer buf
+                          (setq-local rsr/agent-session--viewed-at (current-time))))))
+             ,@body))
+       (dolist (buf (list x y z s term))
+         (when (buffer-live-p buf) (kill-buffer buf))))))
+
+(ert-deftest rsr/agent-sessions-last-agent-goes-back-and-toggles ()
+  "From Y's *tmux: S*, the last agent is X; pressing again returns to Y."
+  (rsr/agent-sessions-test--with-last-agent
+    (funcall stamp x 1)
+    (funcall stamp y 2)
+    (setq rsr/agent-sessions--last-focused-buffer y)
+    (rsr/agent-sessions-visit-last-agent)
+    (should (eq (car (car shown)) x))
+    (rsr/agent-sessions-visit-last-agent)
+    (should (eq (car (car shown)) y))))
+
+(ert-deftest rsr/agent-sessions-last-agent-from-a-non-terminal ()
+  "From an ordinary buffer, the last agent is the newest one."
+  (rsr/agent-sessions-test--with-last-agent
+    (funcall stamp x 1)
+    (funcall stamp y 2)
+    (switch-to-buffer (get-buffer-create "*scratch*"))
+    (setq rsr/agent-sessions--last-focused-buffer (current-buffer))
+    (rsr/agent-sessions-visit-last-agent)
+    (should (eq (car (car shown)) y))))
+
+(ert-deftest rsr/agent-sessions-last-agent-from-a-shell ()
+  "A plain shell is not an agent in front: the newest agent is the last one."
+  (rsr/agent-sessions-test--with-last-agent
+    (funcall stamp x 1)
+    (funcall stamp y 2)
+    (funcall stamp s 3)
+    (switch-to-buffer s)
+    (setq rsr/agent-sessions--last-focused-buffer s)
+    (rsr/agent-sessions-visit-last-agent)
+    (should (eq (car (car shown)) y))))
+
+(ert-deftest rsr/agent-sessions-last-agent-skips-closed ()
+  "A closed agent drops out for the next most recent live one."
+  (rsr/agent-sessions-test--with-last-agent
+    (funcall stamp x 1)
+    (funcall stamp z 2)
+    (funcall stamp y 3)
+    (setq rsr/agent-sessions--last-focused-buffer y)
+    (kill-buffer z)
+    (rsr/agent-sessions-visit-last-agent)
+    (should (eq (car (car shown)) x))))
+
+(ert-deftest rsr/agent-sessions-last-agent-none ()
+  "With no other agent viewed, it says so and shows nothing."
+  (rsr/agent-sessions-test--with-last-agent
+    (funcall stamp y 1)
+    (setq rsr/agent-sessions--last-focused-buffer y)
+    (let ((said nil))
+      (cl-letf (((symbol-function 'message)
+                 (lambda (fmt &rest args) (setq said (apply #'format fmt args)))))
+        (rsr/agent-sessions-visit-last-agent))
+      (should-not shown)
+      (should (equal said "No previous agent session")))))
+
+(ert-deftest rsr/agent-sessions-last-agent-ignores-shells ()
+  "A stamped plain shell is never chosen, even as the newest."
+  (rsr/agent-sessions-test--with-last-agent
+    (funcall stamp x 1)
+    (funcall stamp y 2)
+    (funcall stamp s 3)
+    (setq rsr/agent-sessions--last-focused-buffer y)
+    (rsr/agent-sessions-visit-last-agent)
+    (should (eq (car (car shown)) x))))
+
+(ert-deftest rsr/agent-sessions-last-agent-from-a-tmux-shell ()
+  "A *tmux: S* on a window that is no agent: the newest agent is the last one."
+  (rsr/agent-sessions-test--with-last-agent
+    (funcall stamp x 1)
+    (funcall stamp y 2)
+    (setq rsr/agent-sessions--last-focused-buffer term)
+    (rsr/agent-sessions-visit-last-agent)
+    (should (eq (car (car shown)) y))))
+
+(ert-deftest rsr/agent-sessions-last-agent-uses-display-here ()
+  "It shows the agent through `rsr/agent-sessions--display-buffer-here'."
+  (rsr/agent-sessions-test--with-last-agent
+    (funcall stamp x 1)
+    (funcall stamp y 2)
+    (setq rsr/agent-sessions--last-focused-buffer y)
+    (rsr/agent-sessions-visit-last-agent)
+    (should (equal (cdr (car shown)) '(rsr/agent-sessions--display-buffer-here)))))
+
 (provide 'agent-sessions-test)
 ;;; agent-sessions-test.el ends here

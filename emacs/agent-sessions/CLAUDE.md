@@ -405,6 +405,21 @@ repo-info / transcript-uuid caches. The tension is freshness vs. speed: the
 internal refresh trusts the caches; only `g` re-reads git from disk. Keep new
 per-refresh work off the git path.
 
+**Back to the last agent: `C-c i l`, because `previous-buffer` can't see agents.**
+Agents of one repository share a single `*tmux: S*` buffer, so moving between
+them changes no Emacs buffer, and `C-x <left>` across repositories returns to
+whatever agent that buffer shows now. `rsr/agent-sessions-visit-last-agent`
+goes by agent instead. Its record is the existing `viewed-at` stamp, not a new
+history: the focus hook already maps `*tmux: S*` to the proxy of its current
+window and `--show-terminal` stamps the proxy it shows, so the stamp is per
+agent already, and a second record would only drift from it. Only
+`rsr/agent-sessions` entries count (plain shells are skipped, as are closed
+agents), and when an agent is in front its own newest stamp is skipped; showing
+the target stamps it, so a second press toggles. It replaces the selected
+window (`--display-buffer-here`), never the dashboard. Known lag: a move made
+with tmux's own keys inside `*tmux: S*` isn't stamped until Emacs's next focus
+change, so `C-c i l` may go one agent further back.
+
 ## Orchestration — an agent spawning and talking to other agents
 
 `bin/emacs-agent` lets an agent start another agent in another worktree and
