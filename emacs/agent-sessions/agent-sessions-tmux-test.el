@@ -320,7 +320,7 @@ inside tmux; selecting the window in S alone would leave it there."
 (ert-deftest rsr/agent-tmux-killing-proxy-closes-its-window ()
   (rsr/agent-tmux-test--with-fake #'rsr/agent-tmux-test--standard
     (let ((proxy (rsr/agent-tmux-test--open-proxy)))
-      (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+      (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
         (kill-buffer proxy))
       (should-not (buffer-live-p proxy))
       (should (equal (caar (rsr/agent-tmux-test--called "kill-window"))
@@ -591,7 +591,7 @@ terminal was opened: (NAME SESSION ATTACH)."
            (view (get-buffer-create
                   (rsr/agent-tmux-view-buffer-name
                    (buffer-local-value 'rsr/agent-tmux-session proxy) "@7"))))
-      (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+      (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
         (kill-buffer proxy))
       (should-not (buffer-live-p view)))))
 
@@ -634,7 +634,7 @@ Runs on its own server (empty config, private socket) and kills it after."
               ;; emacs-share must be on the window's PATH (tmux drops -e PATH).
               (should (member rsr/agent-sessions--bin-dir (split-string path ":"))))
             (should (rsr/agent-tmux-refresh-screen proxy))
-            (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+            (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
               (kill-buffer proxy))
             (rsr/agent-tmux-forget-panes)
             (should-not (gethash window (rsr/agent-tmux-panes))))

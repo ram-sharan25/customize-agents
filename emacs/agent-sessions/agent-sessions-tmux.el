@@ -768,8 +768,8 @@ Falls back to SESSION's current window when the client can't be found."
   (or rsr/agent-tmux--window-gone
       (null (gethash rsr/agent-tmux-window (or (rsr/agent-tmux-panes)
                                                (make-hash-table))))
-      (yes-or-no-p (format "Close tmux window %s in session %s? "
-                           rsr/agent-tmux-window rsr/agent-tmux-session))))
+      (y-or-n-p (format "Close tmux window %s in session %s? "
+                        rsr/agent-tmux-window rsr/agent-tmux-session))))
 
 (defun rsr/agent-tmux--kill-window-on-kill ()
   "Close the proxy's window when the proxy is killed, unless it already closed.
