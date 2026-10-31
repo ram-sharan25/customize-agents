@@ -232,6 +232,29 @@ clobbered by `split-string'); the 2 of 38;2 must not read as faint."
       (should (member "CLAUDE_CODE_CHILD_SESSION" argv))
       (should (equal (nth (1+ (seq-position argv "-u")) argv) "CLAUDECODE")))))
 
+(ert-deftest rsr/agent-tmux-open-closes-a-new-session-placeholder ()
+  "A new session's own window is closed once the agent's is open."
+  (rsr/agent-tmux-test--with-fake
+      (lambda (args)
+        (pcase (car args)
+          ("has-session" nil)
+          ("new-session" "@3\n")
+          (_ (rsr/agent-tmux-test--standard args))))
+    (let ((proxy (rsr/agent-tmux-test--open-proxy))
+          (names (mapcar #'caar rsr/agent-tmux-test--calls)))
+      (should (equal (buffer-local-value 'rsr/agent-tmux-window proxy) "@7"))
+      (should (member "sleep" (caar (rsr/agent-tmux-test--called "new-session"))))
+      (should (equal (mapcar #'car (rsr/agent-tmux-test--called "kill-window"))
+                     '(("kill-window" "-t" "@3"))))
+      (should (< (cl-position "new-window" names :test #'equal)
+                 (cl-position "kill-window" names :test #'equal))))))
+
+(ert-deftest rsr/agent-tmux-open-keeps-an-existing-session-windows ()
+  (rsr/agent-tmux-test--with-fake #'rsr/agent-tmux-test--standard
+    (rsr/agent-tmux-test--open-proxy)
+    (should-not (rsr/agent-tmux-test--called "new-session"))
+    (should-not (rsr/agent-tmux-test--called "kill-window"))))
+
 (ert-deftest rsr/agent-tmux-send-paste-and-input-reach-the-window ()
   (rsr/agent-tmux-test--with-fake #'rsr/agent-tmux-test--standard
     (let ((proxy (rsr/agent-tmux-test--open-proxy)))

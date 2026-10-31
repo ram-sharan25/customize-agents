@@ -4965,11 +4965,16 @@ The window gets the same environment the other backends inject, so hooks and
   (pcase-let* ((`(,session . ,_root) (rsr/agent-tmux-target dir))
                (options rsr/agent-sessions--tmux-window-options)
                (id (format "%d-%d" (emacs-pid) (cl-incf rsr/agent-session-counter)))
-               (window (and (rsr/agent-tmux-ensure-session session dir)
+               (created (rsr/agent-tmux-ensure-session session dir))
+               (window (and created
                             (rsr/agent-tmux-new-window
                              session dir (rsr/agent-sessions--terminal-environment id)
                              (plist-get options :name)
                              (plist-get options :detached)))))
+    ;; A new session's own window is a placeholder; the agent's window replaces
+    ;; it, so the session ends with its last agent.
+    (when (stringp created)
+      (rsr/agent-tmux-kill-window created))
     (unless window
       (error "Could not open a tmux window in session %s" session))
     (rsr/agent-tmux-tag-window window id)

@@ -54,7 +54,10 @@ because tmux replaces a `new-window -e PATH=` with the client's PATH; liveness
 is read once per render (`list-panes`) and dead proxies are killed just after
 it, never inside it; and the composer checks read the window with
 `capture-pane -e`, turning faint runs into a face so inline completions still
-read as not-a-draft.
+read as not-a-draft. A session created for an agent starts on a `sleep`
+placeholder window that is closed once the agent's window opens: tmux gives
+every new session a window, and when it was a shell it outlived the last agent,
+so `k` on that agent left the session alive.
 
 **Two agents of one repo on screen need a view, and only `o` makes one.**
 `*tmux: S*` shows one tmux window at a time, so "opening" a second agent of

@@ -208,11 +208,17 @@ its own start directory; a new one in DIR's checkout root, or DIR."
                    rsr/agent-tmux--session-paths)))))
 
 (defun rsr/agent-tmux-ensure-session (session dir)
-  "Create detached SESSION in DIR unless it already exists."
+  "Create detached SESSION in DIR unless it already exists.
+Return t when it existed, the id of its placeholder window when it was
+created, and nil on failure.  A new session comes with a window of its own; it
+runs `sleep' rather than the user's shell, and the caller closes it once the
+agent's window is open, so closing the last agent ends the session instead of
+leaving a stray shell to keep it alive."
   (or (rsr/agent-tmux--ok "has-session" "-t" (concat "=" session))
       ;; A session of this name that has since gone may have started elsewhere.
       (progn (remhash session rsr/agent-tmux--session-paths)
-             (rsr/agent-tmux--ok "new-session" "-d" "-s" session "-c" dir))))
+             (rsr/agent-tmux--output "new-session" "-d" "-P" "-F" "#{window_id}"
+                                     "-s" session "-c" dir "sleep" "86400"))))
 
 (defun rsr/agent-tmux-session-buffer (session)
   "The ghostel buffer attached to SESSION, or nil."
