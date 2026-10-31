@@ -1176,6 +1176,70 @@ drops, so the list is rebuilt here from `aw-ignored-p' alone."
         (kill-buffer buffer)
         (delete-file source)))))
 
+;; Briefs piled up under a reused buffer name
+
+(ert-deftest rsr/agent-sessions-files-stay-with-their-terminal-not-its-name ()
+  "A file shared before the agent id is known belongs to that terminal only.
+Two terminals that reuse one buffer name, as every child of one skill does,
+must not see each other's files."
+  (rsr/agent-sessions-test--with-temp-db
+    (let ((source (make-temp-file "agent-brief-"))
+          (first (generate-new-buffer "implement-plan-tmux")))
+      (unwind-protect
+          (progn
+            (with-current-buffer first (setq-local rsr/agent-session-id "t-1"))
+            (rsr/agent-sessions--share-file (list :buffer first) source "brief")
+            (kill-buffer first)
+            (let ((second (generate-new-buffer "implement-plan-tmux")))
+              (unwind-protect
+                  (progn
+                    (with-current-buffer second
+                      (setq-local rsr/agent-session-id "t-2"))
+                    (should-not (rsr/agent-sessions--session-files
+                                 (list :buffer second))))
+                (kill-buffer second))))
+        (when (buffer-live-p first) (kill-buffer first))
+        (delete-file source)))))
+
+(ert-deftest rsr/agent-sessions-adopt-agent-id-moves-terminal-keyed-data ()
+  "Learning the agent id moves files, links, note and state onto it at once."
+  (rsr/agent-sessions-test--with-temp-db
+    (let ((source (make-temp-file "agent-brief-"))
+          (buffer (generate-new-buffer "implement-plan-tmux"))
+          (rsr/agent-sessions--notes nil)
+          (rsr/agent-sessions--states nil))
+      (unwind-protect
+          (let ((bare (list :buffer buffer))
+                (durable '("session" "uuid-1")))
+            (with-current-buffer buffer (setq-local rsr/agent-session-id "t-1"))
+            (rsr/agent-sessions--share-file bare source "brief")
+            (rsr/agent-sessions--share-link bare "url" "https://example.com" "pr")
+            (rsr/agent-sessions--note-set
+             (rsr/agent-sessions--session-note-keys bare) "a note")
+            (rsr/agent-sessions--state-set
+             (rsr/agent-sessions--session-note-keys bare) "IMPLEMENTING")
+            (rsr/agent-sessions--adopt-agent-id
+             (list :buffer buffer :agent-session-id "uuid-1"))
+            (should (equal (list source)
+                           (mapcar (lambda (f) (plist-get f :path))
+                                   (gethash durable
+                                            (rsr/agent-sessions--shared-files-table)))))
+            (should (gethash durable (rsr/agent-sessions--shared-links-table)))
+            (should (equal "a note"
+                           (gethash durable (rsr/agent-sessions--notes-table))))
+            (should (equal "IMPLEMENTING"
+                           (gethash durable (rsr/agent-sessions--states-table))))
+            (should
+             (equal 0
+              (caar (sqlite-select
+                    (rsr/agent-sessions--db)
+                    "SELECT (SELECT COUNT(*) FROM shared_files WHERE key = 't-1')
+                          + (SELECT COUNT(*) FROM notes WHERE key = 't-1')
+                          + (SELECT COUNT(*) FROM session_states WHERE key = 't-1')
+                          + (SELECT COUNT(*) FROM shared_links WHERE owner_key = 't-1')")))))
+        (kill-buffer buffer)
+        (delete-file source)))))
+
 (ert-deftest rsr/agent-sessions-show-submission-diff-compares-cache-then-reads ()
   (let* ((path "/outside-git/plan.md")
          (previous (make-temp-file "previous--plan-"))

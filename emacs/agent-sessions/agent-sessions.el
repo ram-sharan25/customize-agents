@@ -766,6 +766,10 @@ to the terminal that actually owns the event."
            buf branched-from
            (rsr/agent-sessions--canonical-path (plist-get info :repo-root))))
         (rsr/agent-sessions--folder-hydrate buf agent-session-id)
+        (when (and agent-session-id
+                   (not (and existing (plist-get existing :agent-session-id))))
+          (rsr/agent-sessions--adopt-agent-id
+           (gethash session-id rsr/agent-sessions)))
         ;; Keep the restore log in step.  `SessionEnd' is the agent telling us
         ;; it is going away while its terminal stays; every other event just
         ;; describes a session that is still running.  Note this deliberately
@@ -2296,7 +2300,7 @@ decoration: a repo's *main* worktree has the same canonical path as the repo
 itself, so an untagged key would make those two share one note.
 
 For a session, ID is the agent's own session id when it has one — that
-survives renaming the terminal buffer — and the buffer name otherwise, which is
+survives renaming the terminal buffer — and the terminal id otherwise, which is
 all a plain terminal has to be identified by.  See
 `rsr/agent-sessions--session-note-keys'.")
 
@@ -2319,14 +2323,34 @@ all a plain terminal has to be identified by.  See
   "Note keys to try for SESSION, most durable identity first.
 An agent session is keyed by the agent's own session id, so renaming its
 terminal buffer keeps the note; a plain terminal has no such id and falls back
-to its buffer name.  Both keys are consulted when reading, so a note written on
-a bare terminal is still found once `claude'/`codex' starts in it and the
-session gains an id — at which point `rsr/agent-sessions--note-set' moves it to
-the id key."
-  (let ((sid (plist-get session :agent-session-id))
-        (name (rsr/agent-sessions--session-buffer-name session)))
+to its terminal id, or its buffer name when it has neither.  Not the buffer
+name first: every child of one skill reuses a name like `implement-plan-tmux',
+so a name key collects every such child's brief under each later one.  Both
+keys are consulted when reading, so a note written on a bare terminal is still
+found once `claude'/`codex' starts in it and the session gains an id — at which
+point `rsr/agent-sessions--adopt-agent-id' moves it to the id key."
+  (let* ((sid (plist-get session :agent-session-id))
+         (buf (plist-get session :buffer))
+         (tid (and (buffer-live-p buf)
+                   (buffer-local-value 'rsr/agent-session-id buf)))
+         (name (rsr/agent-sessions--session-buffer-name session)))
     (delq nil (list (and sid (list "session" sid))
-                    (and (not (string-empty-p name)) (list "session" name))))))
+                    (cond (tid (list "session" tid))
+                          ((not (string-empty-p name)) (list "session" name)))))))
+
+(defun rsr/agent-sessions--adopt-agent-id (session)
+  "Move what SESSION's terminal key holds onto its agent session id key.
+Called when a hook first reports the id, so a brief attached at spawn moves
+with the session instead of waiting for the next share to collapse it."
+  (let ((keys (rsr/agent-sessions--session-note-keys session)))
+    (when (cdr keys)
+      (rsr/agent-sessions--files-collapse keys)
+      (rsr/agent-sessions--links-collapse keys)
+      (rsr/agent-sessions--shared-paths-invalidate)
+      (let ((note (cdr (rsr/agent-sessions--note-find keys)))
+            (state (rsr/agent-sessions--session-state session)))
+        (when note (rsr/agent-sessions--note-set keys note))
+        (when state (rsr/agent-sessions--state-set keys state))))))
 
 ;;; Folders -----------------------------------------------------------------
 ;; Folder names and durable session assignments are user choices.  A plain
@@ -2846,8 +2870,8 @@ note by hand is tedious, since \\[kill-line] only kills the line point is on."
 ;;
 ;; - **A file is attached to the session's most durable identity, not to its
 ;;   terminal.**  It reuses `rsr/agent-sessions--session-note-keys' verbatim: the
-;;   agent's own session id when it has one, the buffer name otherwise, reading
-;;   both and collapsing onto the first on write.  So renaming a terminal keeps
+;;   agent's own session id when it has one, the terminal id otherwise, reading
+;;   both and collapsing onto the first once the agent id is known.  So renaming a terminal keeps
 ;;   its files, a file shared into a bare shell survives `claude' starting in
 ;;   it, and a session brought back with `R' comes back with its files.  The
 ;;   caller passes the *terminal* id (that is what the shell env has), and this
