@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Link this repo's skills into every agent harness.  Idempotent: re-running
+# Link this repo's skills into every agent harness and shared instructions into Pi.  Idempotent: re-running
 # fixes links that point elsewhere and leaves correct ones alone.  A real
 # file or directory already at a target is never touched; it is reported so
 # you can decide what to do with it.
@@ -27,6 +27,10 @@ link() {
     echo "linked    $dst"
   fi
 }
+
+mkdir -p "$HOME/.pi/agent"
+link "$repo/instructions/pi/AGENTS.md" "$HOME/.pi/agent/AGENTS.md"
+link "$repo/instructions/shared/core.md" "$HOME/.pi/agent/APPEND_SYSTEM.md"
 
 for skill in "$repo"/skills/*/; do
   skill="${skill%/}"
