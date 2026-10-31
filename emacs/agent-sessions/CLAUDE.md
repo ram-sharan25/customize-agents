@@ -405,6 +405,30 @@ a default, not a rule: it never overrides a folder already chosen for the
 terminal, never crosses repos, and is not re-applied later, so moving the child
 out of the folder sticks.
 
+**`Z` lays a repo out as REPO/<branch>/, and the name lives in git config.**
+`Z` (Magit's worktree key) adds a worktree for a branch at REPO/<branch>/,
+`/` made `-`, beside the main checkout, then a folder of the same name and a
+tmux session running `claude`. The main checkout's folder is a branch name
+too, so the repo's name cannot come from a folder any more; migration records
+it as `agent-sessions.repo-name`, and `rsr/agent-tmux-recorded-repo-name`
+reads `.git/config` directly so the tmux path still runs no git. A repo not
+laid out so is offered a migration, which moves the checkout into
+REPO/<its branch>/. Moving a repo breaks everything that names its path. An
+agent left running would keep the old path, which is now the bare container,
+and write there; but refusing while one runs was a deadlock, because the
+dashboard lists a repo only while a session runs in it. So the migration
+stops every terminal in the repo, moves it, and reopens each at the new path,
+resuming an agent's conversation (staggered, like restore-previous); tmux
+panes no terminal stands for are closed and not brought back. It still
+refuses over unsaved buffers, lists symlinks into the repo, load-path entries
+and the Claude/pi history folders named after it, and asks before
+re-pointing each kind. Its own
+stored paths (folders, order, the log) are rewritten in every TEXT column,
+since all of them key on canonical paths. History folders are matched by the
+`cwd` in their transcripts, not by name: Claude's encoding maps `_` to `-`, so
+`repo_side` would otherwise pass for a subfolder of `repo`. Codex keys history
+by date, so it has nothing to rename.
+
 **A stray key closes the dispatch menu instead of trapping you in it.** `RET`
 on a repo/worktree heading opens project.el's switch menu, whose own
 `project--switch-project-command` loops until it reads a key it recognises —

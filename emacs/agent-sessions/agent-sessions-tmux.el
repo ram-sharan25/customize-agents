@@ -122,18 +122,37 @@ Return (STATUS . OUTPUT); STATUS is -1 when tmux could not be run."
   "When non-nil, a (SESSION . DIRECTORY) that `rsr/agent-tmux-target' returns.
 Bound by commands that already resolved the target, so it is asked for once.")
 
+(defun rsr/agent-tmux-recorded-repo-name (main)
+  "The repo name recorded in the git config of the main checkout MAIN, or nil.
+A repo laid out as REPO/<branch>/ has its main checkout named after a branch,
+so its name is kept as `agent-sessions.repo-name' rather than read from a
+folder.  Reads `.git/config' rather than running git."
+  (with-temp-buffer
+    (ignore-errors
+      (insert-file-contents (expand-file-name ".git/config" main)))
+    (let ((case-fold-search t))
+      (and (re-search-forward "^\\[agent-sessions\\][ \t]*$" nil t)
+           (let ((end (save-excursion
+                        (if (re-search-forward "^\\[" nil t)
+                            (match-beginning 0)
+                          (point-max)))))
+             (and (re-search-forward
+                   "^[ \t]*repo-name[ \t]*=[ \t]*\\(.*?\\)[ \t]*$" end t)
+                  (match-string-no-properties 1)))))))
+
 (defun rsr/agent-tmux-checkout (dir)
   "For DIR inside a git checkout, return (REPO WORKTREE ROOT), else nil.
 REPO is the repository's name, WORKTREE nil for the main checkout and the
 linked worktree's name otherwise, ROOT the checkout's top directory.  Reads
 the `.git' file of a linked worktree (\"gitdir: <main>/.git/worktrees/X\")
-rather than running git.  A worktree folder named REPO-X is called X."
+rather than running git.  A worktree folder named REPO-X is called X.  REPO
+is the name recorded by `rsr/agent-tmux-recorded-repo-name' when there is one."
   (when-let ((root (locate-dominating-file dir ".git")))
     (let* ((root (file-name-as-directory (expand-file-name root)))
            (dotgit (expand-file-name ".git" root))
            (folder (file-name-nondirectory (directory-file-name root))))
       (if (file-directory-p dotgit)
-          (list folder nil root)
+          (list (or (rsr/agent-tmux-recorded-repo-name root) folder) nil root)
         (let* ((gitdir (with-temp-buffer
                          (ignore-errors (insert-file-contents dotgit))
                          (and (re-search-forward "^gitdir: *\\(.+\\)$" nil t)
@@ -144,7 +163,8 @@ rather than running git.  A worktree folder named REPO-X is called X."
           (if (not main)
               ;; A submodule or other `.git' file: a checkout of its own.
               (list folder nil root)
-            (let ((repo (file-name-nondirectory (directory-file-name main))))
+            (let ((repo (or (rsr/agent-tmux-recorded-repo-name main)
+                            (file-name-nondirectory (directory-file-name main)))))
               (list repo
                     (if (and (string-prefix-p (concat repo "-") folder)
                              (> (length folder) (1+ (length repo))))

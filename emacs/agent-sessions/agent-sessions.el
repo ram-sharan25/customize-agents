@@ -143,6 +143,10 @@ message addressed through an older terminal can find this live replacement.")
 
 (defconst rsr/agent-sessions-buffer-name "*Agent Sessions*")
 
+(defgroup rsr/agent-sessions nil
+  "Dashboard of agent sessions running in terminals."
+  :group 'tools)
+
 (defcustom rsr/agent-sessions-terminal 'vterm
   "Terminal emulator backend used for agent sessions.
 One of `vterm', `eat', `ghostel' or `tmux'.  Only the selected package needs to
@@ -287,6 +291,13 @@ See `rsr/agent-sessions-worktree-label'."
                     branch
                   folder))))
 
+(defun rsr/agent-sessions--repo-name (root)
+  "The display name of the repo whose main checkout is ROOT.
+The name recorded in its git config when it is laid out as REPO/<branch>/
+\(see `rsr/agent-sessions-new-worktree'), else ROOT's folder name."
+  (or (rsr/agent-tmux-recorded-repo-name root)
+      (file-name-nondirectory (directory-file-name root))))
+
 (defun rsr/agent-session--repo-info (dir)
   "Return session repo/worktree info for the git repo containing DIR.
 The plist has :repo NAME, :repo-root ROOT (the main worktree's directory),
@@ -303,7 +314,7 @@ The plist has :repo NAME, :repo-root ROOT (the main worktree's directory),
              (main-root (if common-dir
                             (file-name-as-directory (expand-file-name ".." common-dir))
                           toplevel))
-             (repo-name (file-name-nondirectory (directory-file-name main-root)))
+             (repo-name (rsr/agent-sessions--repo-name main-root))
              (branch (ignore-errors (let ((default-directory toplevel))
                                        (magit-get-current-branch))))
              (worktree-label (rsr/agent-sessions--worktree-label toplevel branch)))
@@ -5849,7 +5860,7 @@ The repo root's name when the log has one; otherwise the label, which for a
 tmux session outside git is that session's name."
   (let ((repo (plist-get row :repo)))
     (if repo
-        (file-name-nondirectory (directory-file-name repo))
+        (rsr/agent-sessions--repo-name repo)
       (or (plist-get row :label) "?"))))
 
 (defun rsr/agent-sessions--restore-candidate (row &optional label-width)
@@ -7563,6 +7574,514 @@ out one that is already taken — or hide one that just became available."
                           ""))))
             worktrees "")))))))
 
+;;; Creating worktrees ------------------------------------------------------
+;;
+;; `Z' (Magit's worktree key) makes a worktree for a branch inside a plain folder named after the
+;; repo, next to the main checkout: REPO/<branch>/ beside REPO/<main's branch>/.
+;; A repo not yet laid out so is offered a migration first.  The repo's name
+;; is recorded in its git config, because its main checkout's folder is now
+;; a branch name (see `rsr/agent-tmux-recorded-repo-name').
+
+(defcustom rsr/agent-sessions-worktree-agent "claude"
+  "Command `Z' runs in the tmux session of a worktree it creates."
+  :type 'string)
+
+(defcustom rsr/agent-sessions-symlink-directories
+  '(("~" . 1) ("~/.claude" . 4) ("~/.codex" . 4) ("~/.pi" . 4) ("~/.agents" . 4)
+    ("~/.config" . 4) ("~/.emacs.d" . 2) ("~/.local/bin" . 1))
+  "(DIRECTORY . DEPTH) searched for symlinks into a repo about to be migrated.
+A migration moves the repo's files, which breaks every link into them."
+  :type '(alist :key-type directory :value-type integer))
+
+(defcustom rsr/agent-sessions-history-directories
+  '(("~/.claude/projects" . claude) ("~/.pi/agent/sessions" . pi))
+  "(DIRECTORY . AGENT) of agent session stores with one folder per path.
+Claude keeps a project's sessions and memory in a folder named after the
+path it ran in, and pi its sessions; a migration offers to rename those
+folders so the agents still find them at the repo's new path."
+  :type '(alist :key-type directory :value-type symbol))
+
+(defun rsr/agent-sessions--history-folder-name (agent path)
+  "The folder name AGENT's history store gives PATH."
+  (let ((path (directory-file-name path)))
+    (pcase agent
+      ('claude (replace-regexp-in-string "[^A-Za-z0-9]" "-" path))
+      ('pi (concat "--" (replace-regexp-in-string
+                         "[/\\:]" "-" (string-remove-prefix "/" path))
+                   "--")))))
+
+(defun rsr/agent-sessions--history-folder-cwd (folder)
+  "The directory the sessions in history FOLDER ran in, read from a transcript."
+  (seq-some (lambda (file)
+              (with-temp-buffer
+                (ignore-errors (insert-file-contents file nil 0 65536))
+                (and (re-search-forward "\"cwd\" *: *\"\\([^\"]+\\)\"" nil t)
+                     (match-string 1))))
+            (directory-files folder t "\\.jsonl\\'")))
+
+(defun rsr/agent-sessions--path-under-p (path root)
+  "Non-nil when PATH is ROOT or inside it; both are expanded first."
+  (and path
+       (string-prefix-p (file-name-as-directory (expand-file-name root))
+                        (file-name-as-directory (expand-file-name path)))))
+
+(defun rsr/agent-sessions--move-path (path old new)
+  "PATH, which is under directory OLD, moved under directory NEW."
+  (concat (directory-file-name new)
+          (substring (directory-file-name (expand-file-name path))
+                     (length (directory-file-name (expand-file-name old))))))
+
+(defun rsr/agent-sessions--history-moves (old new)
+  "(FROM . TO) for each history folder of the sessions run under OLD.
+TO is the folder the same session would have under NEW.  A folder whose
+transcripts name no directory is matched only by its exact name."
+  (let (moves)
+    (pcase-dolist (`(,store . ,agent) rsr/agent-sessions-history-directories)
+      (let* ((store (expand-file-name store))
+             (stem (string-remove-suffix
+                    "--" (rsr/agent-sessions--history-folder-name agent old))))
+        (when (file-directory-p store)
+          (dolist (name (directory-files store nil "\\`[^.]"))
+            (let ((folder (expand-file-name name store)))
+              (when (and (string-prefix-p stem name) (file-directory-p folder))
+                (let* ((cwd (rsr/agent-sessions--history-folder-cwd folder))
+                       (target
+                        (cond ((rsr/agent-sessions--path-under-p cwd old)
+                               (rsr/agent-sessions--move-path cwd old new))
+                              ((and (null cwd)
+                                    (equal name (rsr/agent-sessions--history-folder-name
+                                                 agent old)))
+                               new))))
+                  (when target
+                    (push (cons folder
+                                (expand-file-name
+                                 (rsr/agent-sessions--history-folder-name agent target)
+                                 store))
+                          moves)))))))))
+    (nreverse moves)))
+
+(defun rsr/agent-sessions--symlinks-into (root)
+  "(LINK . TARGET) for each symlink under the configured directories into ROOT.
+See `rsr/agent-sessions-symlink-directories'."
+  (let ((roots (delete-dups (list (expand-file-name root) (file-truename root))))
+        links)
+    (pcase-dolist (`(,dir . ,depth) rsr/agent-sessions-symlink-directories)
+      (let ((dir (expand-file-name dir)))
+        (when (file-directory-p dir)
+          (dolist (link (ignore-errors
+                          (process-lines "find" dir "-maxdepth" (number-to-string depth)
+                                         "-type" "l")))
+            (when-let* ((target (file-symlink-p link))
+                        (target (expand-file-name target (file-name-directory link))))
+              (when (seq-some (lambda (r) (rsr/agent-sessions--path-under-p target r))
+                              roots)
+                (push (cons link target) links)))))))
+    (nreverse links)))
+
+(defun rsr/agent-sessions--migration-unsaved (root)
+  "Names of the buffers visiting files under ROOT with unsaved changes."
+  (delq nil (mapcar (lambda (buf)
+                      (with-current-buffer buf
+                        (and buffer-file-name (buffer-modified-p)
+                             (rsr/agent-sessions--path-under-p buffer-file-name root)
+                             (buffer-name buf))))
+                    (buffer-list))))
+
+(defun rsr/agent-sessions--terminal-backend (buf)
+  "The `rsr/agent-sessions-terminal' backend terminal BUF runs on."
+  (with-current-buffer buf
+    (cond ((derived-mode-p 'rsr/agent-tmux-mode) 'tmux)
+          ((derived-mode-p 'vterm-mode) 'vterm)
+          ((derived-mode-p 'eat-mode) 'eat)
+          ((derived-mode-p 'ghostel-mode) 'ghostel)
+          (t rsr/agent-sessions-terminal))))
+
+(defun rsr/agent-sessions--migration-terminals (root)
+  "What a migration of ROOT stops and brings back: one plist per terminal.
+Every terminal whose directory is under ROOT, with what reopening it needs:
+:buffer, :backend, :dir, :name, :folder, and for an agent :agent-type,
+:agent-sid, :title and :running.  A `*tmux: S*' client is left out: it
+shows a session rather than running in a directory."
+  (let ((sessions (make-hash-table :test 'eq)))
+    (maphash (lambda (_id session)
+               (when (buffer-live-p (plist-get session :buffer))
+                 (puthash (plist-get session :buffer) session sessions)))
+             rsr/agent-sessions)
+    (delq nil
+          (mapcar
+           (lambda (buf)
+             (let* ((session (gethash buf sessions))
+                    (dir (or (plist-get session :worktree-path)
+                             (buffer-local-value 'default-directory buf))))
+               (when (and (or session
+                              (with-current-buffer buf
+                                (or (derived-mode-p 'rsr/agent-tmux-mode)
+                                    (and (derived-mode-p 'vterm-mode 'eat-mode
+                                                         'ghostel-mode)
+                                         (get-buffer-process buf)))))
+                          (not (string-prefix-p "*tmux: " (buffer-name buf)))
+                          (rsr/agent-sessions--path-under-p dir root))
+                 (list :buffer buf
+                       :backend (rsr/agent-sessions--terminal-backend buf)
+                       :dir dir
+                       :name (buffer-name buf)
+                       :folder (rsr/agent-sessions--folder-for-session
+                                (or session (list :buffer buf :repo-root root)))
+                       :agent-type (plist-get session :agent-type)
+                       :agent-sid (plist-get session :agent-session-id)
+                       :title (buffer-local-value 'rsr/agent-session-title-override buf)
+                       :running (eq (plist-get session :status) 'running)))))
+           (buffer-list)))))
+
+(defun rsr/agent-sessions--migration-panes (root)
+  "(PANE SESSION COMMAND) for each tmux pane under ROOT no terminal stands for.
+These are closed by a migration and not brought back: a shell opened in
+tmux directly, say, which Emacs has no record of."
+  (let ((windows (mapcar (lambda (b) (buffer-local-value 'rsr/agent-tmux-window b))
+                         (rsr/agent-tmux-proxies))))
+    (delq nil
+          (mapcar (lambda (line)
+                    (pcase (split-string line "\t")
+                      (`(,pane ,session ,window ,command ,path)
+                       (and (not (member window windows))
+                            (rsr/agent-sessions--path-under-p path root)
+                            (list pane session command)))))
+                  (split-string (or (rsr/agent-tmux--output
+                                     "list-panes" "-a" "-F"
+                                     (concat "#{pane_id}\t#{session_name}\t#{window_id}"
+                                             "\t#{pane_current_command}\t#{pane_current_path}"))
+                                    "")
+                                "\n" t)))))
+
+(defun rsr/agent-sessions--migration-stop (terminals panes)
+  "Close TERMINALS and tmux PANES before their directory moves."
+  (dolist (terminal terminals)
+    (when-let ((buf (plist-get terminal :buffer)))
+      (when (buffer-live-p buf)
+        ;; Bound in the buffer: a tmux proxy's close prompt is a buffer-local
+        ;; member, and the migration has already asked.
+        (with-current-buffer buf
+          (let ((kill-buffer-query-functions nil))
+            (kill-buffer buf))))))
+  (dolist (pane panes)
+    (rsr/agent-tmux--ok "kill-pane" "-t" (car pane))))
+
+(defun rsr/agent-sessions--migration-reopen-quietly (terminal old new)
+  "Reopen TERMINAL out of sight, reporting rather than signalling a failure.
+Run from a timer: by then `Z' has shown the new worktree's agent, and a
+terminal shown now would land in whatever window is selected, the dashboard
+included."
+  (condition-case err
+      (save-window-excursion
+        (rsr/agent-sessions--migration-reopen terminal old new))
+    (error (message "agent-sessions: %s" (error-message-string err)))))
+
+(defun rsr/agent-sessions--migration-reopen (terminal old new)
+  "Reopen TERMINAL, closed while its directory moved from under OLD to NEW.
+An agent is resumed in its conversation; one never used, and a plain
+terminal, start afresh."
+  (let* ((dir (file-name-as-directory
+               (rsr/agent-sessions--move-path (plist-get terminal :dir) old new)))
+         (type (plist-get terminal :agent-type))
+         (sid (plist-get terminal :agent-sid))
+         (rsr/agent-sessions-terminal (plist-get terminal :backend))
+         (rsr/agent-tmux--target nil)
+         (buf (if (and type sid
+                       (not (rsr/agent-sessions--never-saved-p
+                             (list :agent-type type :agent-sid sid))))
+                  (rsr/agent-session-start dir (intern type) sid)
+                (let ((buf (rsr/agent-sessions--create-terminal dir)))
+                  (when type (rsr/agent-sessions--terminal-send buf type))
+                  buf))))
+    (when (buffer-live-p buf)
+      (when-let ((title (plist-get terminal :title)))
+        (with-current-buffer buf
+          (setq-local rsr/agent-session-title-override title)))
+      (when-let ((folder (plist-get terminal :folder)))
+        (ignore-errors
+          (rsr/agent-sessions--folder-set
+           (list :buffer buf :repo-root (rsr/agent-sessions--canonical-path
+                                         (plist-get (rsr/agent-session--repo-info dir)
+                                                    :repo-root)))
+           folder)))
+      (rsr/agent-sessions--refresh-if-visible))
+    buf))
+
+(defun rsr/agent-sessions--git (dir &rest args)
+  "Run git with ARGS in DIR; return (STATUS . OUTPUT)."
+  (let ((default-directory (file-name-as-directory dir)))
+    (with-temp-buffer
+      (cons (apply #'process-file magit-git-executable nil t nil args)
+            (string-trim (buffer-string))))))
+
+(defun rsr/agent-sessions--git-or-error (dir &rest args)
+  "Run git with ARGS in DIR and return its output; signal its error on failure."
+  (pcase-let ((`(,status . ,output) (apply #'rsr/agent-sessions--git dir args)))
+    (unless (eq status 0)
+      (user-error "git %s failed: %s" (car args) output))
+    output))
+
+(defun rsr/agent-sessions--worktree-folder-name (branch)
+  "The folder a worktree of BRANCH gets: BRANCH with each `/' made `-'."
+  (replace-regexp-in-string "/" "-" branch))
+
+(defun rsr/agent-sessions--db-move-paths (old new)
+  "Rewrite every stored path under directory OLD to the same path under NEW.
+Folders, manual order and the session log all key on paths, so this keeps
+them attached to a repo that moved.  A row the rewrite would collide with
+an existing one is left as it was."
+  (let* ((db (rsr/agent-sessions--db))
+         (old (directory-file-name old))
+         (new (directory-file-name new))
+         (prefix (concat old "/")))
+    (dolist (table (mapcar #'car (sqlite-select
+                                  db "SELECT name FROM sqlite_master
+                                       WHERE type = 'table'
+                                         AND name NOT LIKE 'sqlite_%'")))
+      (dolist (column (sqlite-select db (format "PRAGMA table_info(\"%s\")" table)))
+        (when (string-equal-ignore-case (nth 2 column) "TEXT")
+          (let ((col (nth 1 column)))
+            (sqlite-execute
+             db (format "UPDATE OR IGNORE \"%s\" SET \"%s\" = ? || substr(\"%s\", ?)
+                          WHERE substr(\"%s\", 1, ?) = ?"
+                        table col col col)
+             (list (concat new "/") (1+ (length prefix)) (length prefix) prefix))
+            (sqlite-execute
+             db (format "UPDATE OR IGNORE \"%s\" SET \"%s\" = ? WHERE \"%s\" = ?"
+                        table col col)
+             (list new old))))))
+    (setq rsr/agent-sessions--folders-loaded-p nil
+          rsr/agent-sessions--order nil)))
+
+(defun rsr/agent-sessions--repoint-buffers (old new)
+  "Point the buffers under directory OLD at NEW, after the repo moved there.
+Magit and Dired buffers cache paths of their own, so those are killed."
+  (dolist (buf (buffer-list))
+    (with-current-buffer buf
+      (cond ((and buffer-file-name
+                  (rsr/agent-sessions--path-under-p buffer-file-name old))
+             (let ((modified (buffer-modified-p)))
+               (set-visited-file-name
+                (rsr/agent-sessions--move-path buffer-file-name old new) t)
+               (set-buffer-modified-p modified)))
+            ((not (rsr/agent-sessions--path-under-p default-directory old)))
+            ((derived-mode-p 'magit-mode 'dired-mode) (kill-buffer buf))
+            (t (setq default-directory
+                     (file-name-as-directory
+                      (rsr/agent-sessions--move-path default-directory old new))))))))
+
+(defun rsr/agent-sessions--migration-report (root main links history
+                                                    &optional terminals panes)
+  "Show what migrating ROOT to MAIN will do.
+LINKS and HISTORY are the symlinks and history folders found, TERMINALS and
+PANES what is running there and will be stopped."
+  (with-current-buffer (get-buffer-create "*agent-sessions migration*")
+    (let ((inhibit-read-only t))
+      (erase-buffer)
+      (insert (format "Move %s\n  to %s\n" root main))
+      (when terminals
+        (insert "\nStopped, then brought back in the new place:\n")
+        (dolist (terminal terminals)
+          (insert (format "  %s%s%s\n" (plist-get terminal :name)
+                          (if (plist-get terminal :agent-sid)
+                              (format " (%s, resumed)" (plist-get terminal :agent-type))
+                            "")
+                          (if (plist-get terminal :running)
+                              "  mid-turn: its current turn is lost"
+                            "")))))
+      (when panes
+        (insert "\ntmux panes closed and not brought back:\n")
+        (pcase-dolist (`(,pane ,session ,command) panes)
+          (insert (format "  %s in session %s (%s)\n" pane session command))))
+      (when-let ((stale (seq-filter (lambda (dir)
+                                      (rsr/agent-sessions--path-under-p dir root))
+                                    load-path)))
+        (insert "\nEmacs load-path entries that will point at the old path:\n")
+        (dolist (dir stale) (insert "  " dir "\n")))
+      (when links
+        (insert "\nSymlinks that will break:\n")
+        (pcase-dolist (`(,link . ,target) links)
+          (insert (format "  %s -> %s\n" (abbreviate-file-name link) target))))
+      (when history
+        (insert "\nAgent history folders named after the old path:\n")
+        (pcase-dolist (`(,from . ,to) history)
+          (insert (format "  %s\n    -> %s\n" (abbreviate-file-name from)
+                          (file-name-nondirectory to)))))
+      (goto-char (point-min))
+      (special-mode))
+    (display-buffer (current-buffer))))
+
+(defun rsr/agent-sessions--migrate-repo (root)
+  "Move the checkout at ROOT into ROOT/<its branch>/; return the new main root.
+Asks first, and refuses while a file under ROOT has unsaved changes.  What
+runs in ROOT is stopped and brought back at the new path.  Afterwards the linked
+worktrees are repaired, the repo's name recorded, the dashboard's stored
+paths moved, and, if chosen, symlinks and agent history re-pointed."
+  (let* ((root (file-name-as-directory (expand-file-name root)))
+         (name (file-name-nondirectory (directory-file-name root)))
+         (branch (or (magit-get-current-branch)
+                     (user-error "%s is not on a branch; check one out first" name)))
+         (folder (rsr/agent-sessions--worktree-folder-name branch))
+         (main (file-name-as-directory (expand-file-name folder root))))
+    (when-let ((unsaved (rsr/agent-sessions--migration-unsaved root)))
+      (user-error "Save these before migrating %s: %s"
+                  name (string-join unsaved ", ")))
+    (let* ((terminals (rsr/agent-sessions--migration-terminals root))
+           (panes (rsr/agent-sessions--migration-panes root))
+           (links (rsr/agent-sessions--symlinks-into root))
+           (history (rsr/agent-sessions--history-moves root main))
+           (linked (seq-remove
+                    (lambda (path) (rsr/agent-sessions--path-under-p path root))
+                    (mapcar #'car (let ((default-directory root))
+                                    (magit-list-worktrees))))))
+      (pcase-let
+          ((`(,repoint ,move-history)
+            ;; The report is on screen only while the questions are asked;
+            ;; left there, its window is where `Z' shows the new agent.
+            (save-window-excursion
+              (rsr/agent-sessions--migration-report
+               root main links history terminals panes)
+              (unless (y-or-n-p
+                       (concat (format "%s is not in the %s/<branch> layout.  Migrate it"
+                                       name name)
+                               (if (or terminals panes)
+                                   (format ", stopping what runs there (%d)? "
+                                           (+ (length terminals) (length panes)))
+                                 "? ")))
+                (user-error "Not migrated"))
+              (list (and links (y-or-n-p (format "Re-point the %d symlink%s to %s? "
+                                                 (length links)
+                                                 (if (cdr links) "s" "")
+                                                 (abbreviate-file-name main))))
+                    (and history
+                         (y-or-n-p (format "Rename the %d agent history folder%s? "
+                                           (length history)
+                                           (if (cdr history) "s" ""))))))))
+        (rsr/agent-sessions--migration-stop terminals panes)
+        (let ((temp (make-temp-name (concat (directory-file-name root) ".migrating-"))))
+          (rename-file (directory-file-name root) temp)
+          (condition-case err
+              (progn (make-directory root)
+                     (rename-file temp (directory-file-name main)))
+            (error
+             (ignore-errors (delete-directory root))
+             (rename-file temp (directory-file-name root))
+             (signal (car err) (cdr err)))))
+        (when linked
+          (apply #'rsr/agent-sessions--git-or-error main "worktree" "repair" linked))
+        (rsr/agent-sessions--git-or-error main "config" "agent-sessions.repo-name" name)
+        (rsr/agent-sessions--db-move-paths root main)
+        (unless (equal root (file-truename root))
+          (rsr/agent-sessions--db-move-paths (file-truename root) (file-truename main)))
+        (rsr/agent-sessions--repoint-buffers root main)
+        (when repoint
+          (pcase-dolist (`(,link . ,target) links)
+            (make-symbolic-link (rsr/agent-sessions--move-path
+                                 target
+                                 (if (rsr/agent-sessions--path-under-p target root)
+                                     root
+                                   (file-truename root))
+                                 main)
+                                link t)))
+        (when move-history
+          (pcase-dolist (`(,from . ,to) history)
+            (if (file-exists-p to)
+                (message "Left %s: %s already exists" from to)
+              (rename-file from to))))
+        ;; Staggered, as `rsr/agent-sessions-restore-previous' does: terminals
+        ;; opened in one go leave their shells racing their own startup.  The
+        ;; terminal goes to the timer as an argument: this file is dynamically
+        ;; bound, so a lambda would find `terminal' unbound when it ran.
+        (seq-do-indexed (lambda (terminal n)
+                          (run-at-time (* n 1.0) nil
+                                       #'rsr/agent-sessions--migration-reopen-quietly
+                                       terminal root main))
+                        terminals)
+        (message "Migrated %s to %s" name (abbreviate-file-name main))
+        main))))
+
+(defun rsr/agent-sessions--adopt-layout (root)
+  "Offer to record ROOT's parent as the repo folder; return ROOT if accepted.
+For a checkout already named after its branch, which is laid out as
+REPO/<branch>/ but was never migrated, so nothing recorded its name."
+  (let ((parent (file-name-nondirectory
+                 (directory-file-name (file-name-directory (directory-file-name root))))))
+    (when (y-or-n-p (format "%s is already named after its branch.  Use %s as the repo folder? "
+                            (abbreviate-file-name root) parent))
+      (rsr/agent-sessions--git-or-error root "config" "agent-sessions.repo-name" parent)
+      root)))
+
+(defun rsr/agent-sessions--add-worktree (main)
+  "Add a worktree beside MAIN, the repo's main checkout, for a branch asked for.
+Asks for the branch: an existing local branch is checked out, a remote
+branch gets a local one tracking it, and a new name is created from a
+starting point asked for as Magit's branch commands ask.  Returns
+\(BRANCH . PATH)."
+  (let* ((default-directory main)
+         (branch (magit-completing-read "Worktree for branch"
+                                        (magit-list-branch-names)
+                                        nil nil nil 'magit-revision-history))
+         (local (cond ((magit-local-branch-p branch) branch)
+                      ((magit-remote-branch-p branch)
+                       (cdr (magit-split-branch-name branch)))
+                      (t branch)))
+         (path (expand-file-name (rsr/agent-sessions--worktree-folder-name local)
+                                 (file-name-directory (directory-file-name main)))))
+    (when (file-exists-p path)
+      (user-error "%s already exists" (abbreviate-file-name path)))
+    (cond ((magit-local-branch-p local)
+           (rsr/agent-sessions--git-or-error main "worktree" "add" path local))
+          ((magit-remote-branch-p branch)
+           (rsr/agent-sessions--git-or-error main "worktree" "add" "-b" local path branch))
+          (t
+           (rsr/agent-sessions--git-or-error main "check-ref-format" "--branch" local)
+           (rsr/agent-sessions--git-or-error
+            main "worktree" "add" "-b" local path
+            (magit-read-starting-point "Create branch" local))))
+    (cons local (file-name-as-directory path))))
+
+(defun rsr/agent-sessions-new-worktree ()
+  "Create a worktree for a branch and start an agent in it.
+The repo is the one at point in the dashboard, else the current buffer's.
+The worktree goes in REPO/<branch>/, beside the main checkout, a `/' in the
+branch name made `-'; a repo not laid out so is offered a migration first.
+The worktree gets a folder of the same name, and a tmux session in which
+`rsr/agent-sessions-worktree-agent' starts."
+  (interactive)
+  (let* ((repo-section (and (derived-mode-p 'rsr/agent-sessions-mode)
+                            (rsr/agent-sessions--enclosing-section
+                             'rsr/agent-session-repo)))
+         (root (or (and repo-section (plist-get (oref repo-section value) :root))
+                   (plist-get (rsr/agent-session--repo-info default-directory)
+                              :repo-root)
+                   (user-error "No repo at point")))
+         (root (file-name-as-directory (expand-file-name root)))
+         (main (let ((default-directory root))
+                 (cond ((rsr/agent-tmux-recorded-repo-name root) root)
+                       ((and (magit-get-current-branch)
+                             (equal (file-name-nondirectory (directory-file-name root))
+                                    (rsr/agent-sessions--worktree-folder-name
+                                     (magit-get-current-branch))))
+                        (or (rsr/agent-sessions--adopt-layout root)
+                            (rsr/agent-sessions--migrate-repo root)))
+                       (t (rsr/agent-sessions--migrate-repo root)))))
+         (added (rsr/agent-sessions--add-worktree main))
+         (path (cdr added))
+         (name (file-name-nondirectory (directory-file-name path)))
+         (folder (rsr/agent-sessions--folder-create
+                  name (rsr/agent-sessions--canonical-path main)))
+         (buf (let ((rsr/agent-sessions-terminal 'tmux)
+                    (rsr/agent-tmux--target nil))
+                (rsr/agent-sessions--create-terminal path name))))
+    (clrhash rsr/agent-sessions--worktrees-cache)
+    (rsr/agent-sessions--folder-set (list :buffer buf :repo-root main)
+                                    (plist-get folder :id))
+    (rsr/agent-sessions--terminal-send buf rsr/agent-sessions-worktree-agent)
+    (rsr/agent-sessions--refresh-if-visible)
+    (rsr/agent-sessions--goto-terminal-row buf)
+    (message "Worktree %s on %s" (abbreviate-file-name path) (car added))
+    buf))
+
 (define-key rsr/agent-sessions-mode-map (kbd "RET") #'rsr/agent-sessions-jump)
 ;; `o' is "other window", as in dired, ibuffer and occur.
 (define-key rsr/agent-sessions-mode-map (kbd "o") #'rsr/agent-sessions-jump-other-window)
@@ -7590,6 +8109,7 @@ out one that is already taken — or hide one that just became available."
 (define-key rsr/agent-sessions-mode-map (kbd "S") #'rsr/agent-sessions-toggle-attention-sort)
 (define-key rsr/agent-sessions-mode-map (kbd "F") #'rsr/agent-sessions-folder-action)
 (define-key rsr/agent-sessions-mode-map (kbd "+") #'rsr/agent-sessions-new-vterm)
+(define-key rsr/agent-sessions-mode-map (kbd "Z") #'rsr/agent-sessions-new-worktree)
 (define-key rsr/agent-sessions-mode-map (kbd "n") #'rsr/agent-sessions-next)
 (define-key rsr/agent-sessions-mode-map (kbd "p") #'rsr/agent-sessions-prev)
 (define-key rsr/agent-sessions-mode-map (kbd "N") #'rsr/agent-sessions-next-attention)
