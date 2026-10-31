@@ -44,7 +44,9 @@ usage() { sed -n '6,26p' "$0" | sed -e 's/^# \{0,1\}//' >&2; }
 # Single-quote STRING for a POSIX shell.
 shq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
-skill=""; prompt_file=""; task=""; brief=""; agent=claude; mode=top
+# Explicit --agent wins; Emacs injects its local.el preference into terminals.
+# Standalone shells may export AGENT_DEFAULT; absent configuration keeps Claude.
+skill=""; prompt_file=""; task=""; brief=""; agent=${AGENT_DEFAULT:-claude}; mode=top
 parent_id=${EMACS_AGENT_SESSION_ID:-}; slug=""; dir=""; cwd=""; name=""
 title=""; attach=""; attach_label=""; fork=""; session_file=""; focus=1; dry_run=""
 envs=""   # newline-separated KEY=VALUE
@@ -198,6 +200,9 @@ EXPLORE_PARENT_SOCKET LAUNCH_SKILL LAUNCH_TASK"
 child_env=""
 add_env() { child_env="${child_env:+$child_env
 }$1"; }
+# Carry the machine preference across opener/server boundaries, not the
+# explicitly selected agent (which may be a one-off alternate).
+[ -z "${AGENT_DEFAULT:-}" ] || add_env "AGENT_DEFAULT=$AGENT_DEFAULT"
 [ -z "$skill" ] || add_env "LAUNCH_SKILL=$skill"
 [ -z "$task" ] || add_env "LAUNCH_TASK=$task"
 if [ "$mode" = child ]; then

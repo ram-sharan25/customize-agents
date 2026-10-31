@@ -104,7 +104,8 @@ of output is shown, or the failure with its output."
                       (list (format "EMACS_SOCKET_NAME=%s"
                                     (expand-file-name server-name server-socket-dir))))
                  ;; Emacs is not the parent pane, whatever tmux it started in.
-                 (list "TMUX" "TMUX_PANE" "EMACS_AGENT_SESSION_ID")
+                 (list "TMUX" "TMUX_PANE" "EMACS_AGENT_SESSION_ID"
+                       (format "AGENT_DEFAULT=%s" (rsr/agent-sessions-select-agent)))
                  process-environment)))
     (make-process
      :name "agent-launch"
@@ -124,8 +125,8 @@ of output is shown, or the failure with its output."
              (message "agent-launch failed: %s" (string-trim output)))))))))
 
 (defun rsr/agent-workflow--agent (prefix)
-  "The agent for a key pressed with PREFIX: Pi with `C-u', else Claude."
-  (if prefix "pi" "claude"))
+  "The configured default agent, or its alternate with PREFIX."
+  (rsr/agent-sessions-select-agent prefix))
 
 (defun rsr/agent-workflow--report (output)
   "Show the first line of the launcher's OUTPUT."
@@ -213,13 +214,13 @@ none, the user is asked, as for a top-level key."
         (lambda (prefix)
           (interactive "P")
           (rsr/agent-workflow-open-top-level skill (rsr/agent-workflow--agent prefix)))
-        (format "Open a session running %s (%s); with \\[universal-argument], Pi."
+        (format "Open %s (%s) with the default agent; \\[universal-argument] selects the alternate."
                 skill label))
       (defalias child
         (lambda (prefix)
           (interactive "P")
           (rsr/agent-workflow-open-child skill (rsr/agent-workflow--agent prefix)))
-        (format "Open a %s child (%s) of the current session; with \\[universal-argument], Pi."
+        (format "Open a %s child (%s) with the default agent; \\[universal-argument] selects the alternate."
                 skill label))
       (define-key rsr/agent-workflow-map (kbd key) (cons label top))
       (define-key rsr/agent-workflow-child-map (kbd key) (cons label child)))))

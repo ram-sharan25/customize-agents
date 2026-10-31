@@ -905,6 +905,12 @@ are asked."
     buf))
 
 ;;;###autoload
+(defun rsr/agent-tmux-default (&optional prefix)
+  "Open the configured default agent, or its alternate with PREFIX."
+  (interactive "P")
+  (require 'agent-sessions)
+  (rsr/agent-tmux-agent (rsr/agent-sessions-select-agent prefix)))
+
 (defun rsr/agent-tmux-claude ()
   "Open Claude Code in a new window of this repository's tmux session."
   (interactive)

@@ -947,7 +947,25 @@ the dashboard: everything it needs from `agent-sessions.el` is a public
 entry point or a small helper, and keeping it out stops the 6,800-line
 dashboard file from absorbing a workflow that may change on its own schedule.
 
-**One launcher.** Every session a key opens goes through `bin/agent-launch`,
+**Machine-local agent preference.** Set
+`(setq rsr/agent-sessions-default-agent 'pi)` in `local.el`, before loading
+this package, to use Pi for fresh sessions on that computer. The package
+fallback is Claude. `rsr/agent-tmux-default` (the primary agent shortcut),
+workflow top-level/child keys and dashboard `Z` use this preference;
+`C-u` selects the other agent. Explicit Claude/Pi commands and recorded
+session identities (resume, branch, restore, migration) remain unchanged.
+`rsr/agent-sessions-worktree-agent` is nil by default; a non-nil command
+string remains a worktree-only override, bypassed by `C-u`.
+
+Session terminals and workflow subprocesses receive `AGENT_DEFAULT` from
+this setting. `agent-launch` uses explicit `--agent` first, then
+`AGENT_DEFAULT`, then Claude. It carries the configured preference into
+children through both openers, even when a one-off explicit/alternate agent
+is selected. Thus skill-launched reviews without `--agent` use the machine
+preference too. Existing shell environments are not retroactively updated;
+standalone shells outside Emacs can export `AGENT_DEFAULT=pi` themselves.
+
+**One workflow launcher.** Every session a workflow key opens goes through `bin/agent-launch`,
 the same script agents use to open review, bug-fix and exploration children
 (`explore-session`'s `open-window.sh` is a thin wrapper over it). The script
 decides the command and environment; Emacs only opens the window

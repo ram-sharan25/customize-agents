@@ -6,7 +6,7 @@ tmp=$(cd "$(mktemp -d)" && pwd -P); trap 'rm -rf "$tmp"' EXIT
 task="$tmp/plans/t"; mkdir -p "$task/artifacts/r"; printf 'brief text\n' > "$task/artifacts/r/brief.md"
 out="$tmp/out"
 
-run() { env -u TMUX -u TMUX_PANE -u EMACS_AGENT_SESSION_ID "$@" > "$out" 2>&1; }
+run() { env -u AGENT_DEFAULT -u TMUX -u TMUX_PANE -u EMACS_AGENT_SESSION_ID "$@" > "$out" 2>&1; }
 has() { grep -qF -- "$1" "$out" || fail "$2: expected '$1' in: $(cat "$out")"; }
 lacks() { if grep -qF -- "$1" "$out"; then fail "$2: unexpected '$1' in: $(cat "$out")"; fi; }
 
@@ -21,6 +21,21 @@ lacks "EXPLORE_PARENT_TMUX" top
 run "$launch" --dry-run --top --agent pi --skill review-plan --task "$task" --cwd "$tmp" \
   || fail "pi: exit $?"
 has "command: pi -n 'review-plan' '/skill:review-plan $task/'" pi
+
+# Machine preference applies only when --agent is omitted, and reaches children.
+run env AGENT_DEFAULT=pi "$launch" --dry-run --top --skill review-plan --task "$task" --cwd "$tmp" \
+  || fail "configured Pi: exit $?"
+has "command: pi -n 'review-plan'" "configured Pi"
+has "env:    AGENT_DEFAULT=pi" "preference propagation"
+run env AGENT_DEFAULT=pi "$launch" --dry-run --top --agent claude --skill review-plan --task "$task" --cwd "$tmp" \
+  || fail "explicit Claude: exit $?"
+has "command: claude -n 'review-plan'" "explicit override"
+has "env:    AGENT_DEFAULT=pi" "override preserves preference"
+run env AGENT_DEFAULT=claude "$launch" --dry-run --top --agent pi --skill review-plan --task "$task" --cwd "$tmp" \
+  || fail "explicit Pi: exit $?"
+has "command: pi -n 'review-plan'" "explicit Pi override"
+run env AGENT_DEFAULT=invalid "$launch" --dry-run --top --skill review-plan --task "$task" --cwd "$tmp"
+[[ $? -eq 2 ]] || fail "invalid default: expected exit 2"
 
 # A brief is appended after the skill line.
 run "$launch" --dry-run --top --skill review-plan --task "$task" --cwd "$tmp" \

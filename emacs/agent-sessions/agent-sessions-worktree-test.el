@@ -189,8 +189,14 @@ in `timers', run by `rsr/agent-wt-test--run-timers'."
         (kill-buffer buf)))))
 
 (ert-deftest rsr/agent-wt-new-worktree-creates-folder-and-starts-agent ()
-  (rsr/agent-wt-test--with-env
-    (let* ((main (rsr/agent-wt-test--repo (expand-file-name "proj/main" tmp) "main"))
+  (dolist (case '((claude nil nil "claude") (claude (4) nil "pi")
+                  (pi nil nil "pi") (pi (4) nil "claude")
+                  (pi nil "claude --verbose" "claude --verbose")
+                  (pi (4) "pi --verbose" "claude")))
+   (rsr/agent-wt-test--with-env
+    (let* ((rsr/agent-sessions-default-agent (nth 0 case))
+           (rsr/agent-sessions-worktree-agent (nth 2 case))
+           (main (rsr/agent-wt-test--repo (expand-file-name "proj/main" tmp) "main"))
            (sent nil)
            (terminal (generate-new-buffer " fake-terminal"))
            (answers '("feat/new")))
@@ -209,11 +215,12 @@ in `timers', run by `rsr/agent-wt-test--run-timers'."
                  (lambda (_buf string) (push string sent))))
         (unwind-protect
             (let ((default-directory main))
-              (rsr/agent-sessions-new-worktree)
+              (let ((current-prefix-arg (nth 1 case)))
+                (call-interactively #'rsr/agent-sessions-new-worktree))
               (let ((path (expand-file-name "feat-new/" (expand-file-name "proj" tmp))))
                 (should (equal (rsr/agent-wt-test--git path "rev-parse" "--abbrev-ref" "HEAD")
                                "feat/new"))
-                (should (equal sent (list "claude" (cons path "feat-new"))))
+                (should (equal sent (list (nth 3 case) (cons path "feat-new"))))
                 (should (equal (mapcar (lambda (f) (plist-get f :name))
                                        (rsr/agent-sessions--folders-for-repo main))
                                '("feat-new"))))
@@ -226,6 +233,6 @@ in `timers', run by `rsr/agent-wt-test--run-timers'."
                              "old"))
               (setq answers '("old"))
               (should-error (rsr/agent-sessions-new-worktree) :type 'user-error))
-          (kill-buffer terminal))))))
+          (kill-buffer terminal)))))))
 
 ;;; agent-sessions-worktree-test.el ends here

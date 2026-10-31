@@ -61,6 +61,7 @@ The PATH entry is built from the PATH the terminal was going to inherit anyway
 additive.  Assembling one from anywhere else could silently *shrink* the
 shell's PATH, which is the failure mode worth designing away here."
   (append (list (format "EMACS_AGENT_SESSION_ID=%s" id)
+                (format "AGENT_DEFAULT=%s" (rsr/agent-sessions-select-agent))
                 (format "PATH=%s%s%s" rsr/agent-sessions--bin-dir path-separator
                         (or (getenv "PATH") "")))
           rsr/agent-sessions--extra-terminal-env))
@@ -146,6 +147,23 @@ message addressed through an older terminal can find this live replacement.")
 (defgroup rsr/agent-sessions nil
   "Dashboard of agent sessions running in terminals."
   :group 'tools)
+
+(defcustom rsr/agent-sessions-default-agent 'claude
+  "Default agent for fresh sessions: `claude' or `pi'.
+Set this in local.el before loading the package.  A prefix argument on
+agent-launching commands selects the other agent.  Explicit agent choices
+and existing-session identities are never changed by this preference."
+  :type '(choice (const claude) (const pi))
+  :group 'rsr/agent-sessions)
+
+(defun rsr/agent-sessions-select-agent (&optional alternate)
+  "Return the default agent name, or the other agent when ALTERNATE is non-nil."
+  (unless (memq rsr/agent-sessions-default-agent '(claude pi))
+    (user-error "Invalid default agent: %S (expected claude or pi)"
+                rsr/agent-sessions-default-agent))
+  (symbol-name (if alternate
+                   (if (eq rsr/agent-sessions-default-agent 'pi) 'claude 'pi)
+                 rsr/agent-sessions-default-agent)))
 
 (defcustom rsr/agent-sessions-terminal 'vterm
   "Terminal emulator backend used for agent sessions.
@@ -7582,9 +7600,11 @@ out one that is already taken — or hide one that just became available."
 ;; is recorded in its git config, because its main checkout's folder is now
 ;; a branch name (see `rsr/agent-tmux-recorded-repo-name').
 
-(defcustom rsr/agent-sessions-worktree-agent "claude"
-  "Command `Z' runs in the tmux session of a worktree it creates."
-  :type 'string)
+(defcustom rsr/agent-sessions-worktree-agent nil
+  "Optional command override for `Z', including any command-line flags.
+When nil, use `rsr/agent-sessions-default-agent'.  A prefix argument ignores
+this override and launches the alternate of the configured default agent."
+  :type '(choice (const :tag "Use default agent" nil) string))
 
 (defcustom rsr/agent-sessions-symlink-directories
   '(("~" . 1) ("~/.claude" . 4) ("~/.codex" . 4) ("~/.pi" . 4) ("~/.agents" . 4)
@@ -8040,15 +8060,19 @@ starting point asked for as Magit's branch commands ask.  Returns
             (magit-read-starting-point "Create branch" local))))
     (cons local (file-name-as-directory path))))
 
-(defun rsr/agent-sessions-new-worktree ()
+(defun rsr/agent-sessions-new-worktree (&optional prefix)
   "Create a worktree for a branch and start an agent in it.
 The repo is the one at point in the dashboard, else the current buffer's.
 The worktree goes in REPO/<branch>/, beside the main checkout, a `/' in the
 branch name made `-'; a repo not laid out so is offered a migration first.
 The worktree gets a folder of the same name, and a tmux session in which
-`rsr/agent-sessions-worktree-agent' starts."
-  (interactive)
-  (let* ((repo-section (and (derived-mode-p 'rsr/agent-sessions-mode)
+the configured default agent starts.  With PREFIX, start the alternate agent.
+An explicit `rsr/agent-sessions-worktree-agent' overrides the normal command."
+  (interactive "P")
+  (let* ((command (if prefix (rsr/agent-sessions-select-agent t)
+                    (or rsr/agent-sessions-worktree-agent
+                        (rsr/agent-sessions-select-agent))))
+         (repo-section (and (derived-mode-p 'rsr/agent-sessions-mode)
                             (rsr/agent-sessions--enclosing-section
                              'rsr/agent-session-repo)))
          (root (or (and repo-section (plist-get (oref repo-section value) :root))
@@ -8076,7 +8100,7 @@ The worktree gets a folder of the same name, and a tmux session in which
     (clrhash rsr/agent-sessions--worktrees-cache)
     (rsr/agent-sessions--folder-set (list :buffer buf :repo-root main)
                                     (plist-get folder :id))
-    (rsr/agent-sessions--terminal-send buf rsr/agent-sessions-worktree-agent)
+    (rsr/agent-sessions--terminal-send buf command)
     (rsr/agent-sessions--refresh-if-visible)
     (rsr/agent-sessions--goto-terminal-row buf)
     (message "Worktree %s on %s" (abbreviate-file-name path) (car added))
