@@ -17,7 +17,7 @@ harness_dirs=(
 link() {
   local src="$1" dst="$2"
   if [[ -L "$dst" ]]; then
-    [[ "$(readlink "$dst")" == "$src" ]] && return
+    [[ "$(readlink "$dst")" == "$src" ]] && return 0
     ln -sfn "$src" "$dst"
     echo "relinked  $dst"
   elif [[ -e "$dst" ]]; then
