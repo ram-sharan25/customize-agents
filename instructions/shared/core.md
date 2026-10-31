@@ -82,6 +82,14 @@ explicit request to implement; the preflight lives in `implement-plan`.
 Planning documents live in `/Users/rrimal/Stillness/Agent_Stuffs/Plans/`,
 never in an implementation repository.
 
+## Code folder in the Emacs dashboard
+
+When `EMACS_AGENT_SESSION_ID` is set (you are running in an Emacs
+agent-sessions terminal) and you are about to change files in a git
+repository, first run `emacs-share folder code <that repository's root>`, once
+per repository. This lets the dashboard's `O c` open the code you are working
+on. Registering the same repository again is harmless. Outside Emacs, skip it.
+
 ## Installation location
 
 Install new applications, binaries, and shared tools under `/opt/`, not in user-specific locations. If an application requires installation in a user-specific location, ask the user before proceeding rather than assuming permission.
