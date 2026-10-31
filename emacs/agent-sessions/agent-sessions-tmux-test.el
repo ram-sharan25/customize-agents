@@ -255,6 +255,39 @@ clobbered by `split-string'); the 2 of 38;2 must not read as faint."
     (should-not (rsr/agent-tmux-test--called "new-session"))
     (should-not (rsr/agent-tmux-test--called "kill-window"))))
 
+(defun rsr/agent-tmux-test--show (exists create)
+  "Call `rsr/agent-tmux-show' for session \"app\"; return its attach argv.
+EXISTS says whether tmux has the session, CREATE is passed on."
+  (let (attach)
+    (cl-letf (((symbol-function 'rsr/agent-tmux--call)
+               (lambda (args &optional _)
+                 (cons (if (or exists (not (equal (car args) "has-session"))) 0 1) "")))
+              ((symbol-function 'rsr/agent-tmux--show-terminal)
+               (lambda (_name _session _dir _display argv) (setq attach argv))))
+      (rsr/agent-tmux-show "app" "/tmp/" nil create))
+    attach))
+
+(ert-deftest rsr/agent-tmux-show-attaches-without-creating ()
+  "Showing a session never brings an ended one back with a stray shell."
+  (should (equal (rsr/agent-tmux-test--show t nil)
+                 '("attach-session" "-t" "=app")))
+  (should-error (rsr/agent-tmux-test--show nil nil) :type 'user-error))
+
+(ert-deftest rsr/agent-tmux-show-creates-when-asked ()
+  (should (equal (rsr/agent-tmux-test--show nil t)
+                 '("new-session" "-A" "-s" "app" "-c" "/tmp/"))))
+
+(ert-deftest rsr/agent-tmux-panes-reads-no-server-as-no-windows ()
+  "The server exits with its last session; that is no windows, not unknown."
+  (dolist (case '(("no server running on /tmp/tmux-1/default\n" . 0)
+                  ("error connecting to /tmp/tmux-1/default (No such file or directory)\n" . 0)
+                  ("lost server\n" . nil)))
+    (let ((rsr/agent-tmux--panes nil))
+      (cl-letf (((symbol-function 'rsr/agent-tmux--call)
+                 (lambda (_args &optional _) (cons 1 (car case)))))
+        (let ((panes (rsr/agent-tmux-panes)))
+          (should (equal (and panes (hash-table-count panes)) (cdr case))))))))
+
 (ert-deftest rsr/agent-tmux-send-paste-and-input-reach-the-window ()
   (rsr/agent-tmux-test--with-fake #'rsr/agent-tmux-test--standard
     (let ((proxy (rsr/agent-tmux-test--open-proxy)))
@@ -617,6 +650,26 @@ terminal was opened: (NAME SESSION ATTACH)."
       (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
         (kill-buffer proxy))
       (should-not (buffer-live-p view)))))
+
+(ert-deftest rsr/agent-tmux-killing-a-proxy-on-screen-in-a-view-closes-its-window ()
+  "Quitting the view's window must not lose which window the proxy owns."
+  (rsr/agent-tmux-test--with-fake #'rsr/agent-tmux-test--standard
+    (let* ((proxy (rsr/agent-tmux-test--open-proxy))
+           (view (get-buffer-create
+                  (rsr/agent-tmux-view-buffer-name
+                   (buffer-local-value 'rsr/agent-tmux-session proxy) "@7"))))
+      (save-window-excursion
+        ;; `o' pops the view up in a window of its own; quitting it deletes
+        ;; that window and selects another, making that one's buffer current.
+        (delete-other-windows)
+        (switch-to-buffer (get-buffer-create " other"))
+        (pop-to-buffer view '(display-buffer-pop-up-window))
+        (setq rsr/agent-tmux-test--calls nil)
+        (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
+          (with-current-buffer proxy (kill-buffer proxy))))
+      (should-not (buffer-live-p view))
+      (should (equal (mapcar #'car (rsr/agent-tmux-test--called "kill-window"))
+                     '(("kill-window" "-t" "@7")))))))
 
 ;;; Live, against a real tmux server on a private socket
 

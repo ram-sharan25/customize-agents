@@ -296,12 +296,18 @@ DISPLAY non-nil, display it without selecting it.  Return the buffer."
       (setq-local rsr/agent-tmux-session session))
     buffer))
 
-(defun rsr/agent-tmux-show (session dir &optional display)
+(defun rsr/agent-tmux-show (session dir &optional display create)
   "Show SESSION in its ghostel buffer, attaching to it as needed.
-A session that doesn't exist yet is created in DIR.  With DISPLAY non-nil,
-display the buffer without selecting it.  Return the buffer."
+With DISPLAY non-nil, display the buffer without selecting it.  Return the
+buffer.  A session that doesn't exist is an error unless CREATE is non-nil,
+when it is created in DIR: one made here starts on a shell window that no
+agent owns, which would keep the session alive after its last agent."
+  (unless (or create (rsr/agent-tmux--ok "has-session" "-t" (concat "=" session)))
+    (user-error "tmux session %s has ended" session))
   (rsr/agent-tmux--show-terminal (format "*tmux: %s*" session) session dir display
-                                 (list "new-session" "-A" "-s" session "-c" dir)))
+                                 (if create
+                                     (list "new-session" "-A" "-s" session "-c" dir)
+                                   (list "attach-session" "-t" (concat "=" session)))))
 
 (defun rsr/agent-tmux-view-buffer-name (session window)
   "The name of the buffer `rsr/agent-tmux-show-view' shows WINDOW of SESSION in."
@@ -477,12 +483,17 @@ given with -e never reaches the shell."
 (defun rsr/agent-tmux-panes ()
   "Hash of window id → (:pid PID :title TITLE) for every window's first pane.
 Nil when tmux could not be asked, which callers must read as \"unknown\", not
-\"no windows\"."
+\"no windows\".  A server that is not running has no windows: it exits with
+its last session, which is how the last agent anywhere ends when it quits."
   (if (and rsr/agent-tmux--panes
            (< (- (float-time) (car rsr/agent-tmux--panes)) rsr/agent-tmux--panes-ttl))
       (cdr rsr/agent-tmux--panes)
-    (let* ((out (rsr/agent-tmux--output
-                 "list-panes" "-a" "-F" "#{window_id}\t#{pane_pid}\t#{pane_title}"))
+    (let* ((result (rsr/agent-tmux--call
+                    '("list-panes" "-a" "-F" "#{window_id}\t#{pane_pid}\t#{pane_title}")))
+           (out (pcase result
+                  (`(0 . ,out) (string-trim-right out "\n"))
+                  (`(1 . ,(rx bos (or "no server running on " "error connecting to ")))
+                   "")))
            (table (and out (make-hash-table :test 'equal))))
       (when table
         (dolist (line (split-string out "\n" t))
@@ -801,14 +812,17 @@ Falls back to SESSION's current window when the client can't be found."
   "Close the proxy's window when the proxy is killed, unless it already closed.
 Its view terminal goes too: with the window gone the view would show another.
 Each window showing it is quit, so one made for it closes and one it took
-over gets its old buffer back, instead of showing some other buffer."
+over gets its old buffer back, instead of showing some other buffer.
+Quitting a window can make the buffer it falls back to current, so this one
+is restored before its window is read; otherwise the window outlived its row."
   (when-let ((view (get-buffer (rsr/agent-tmux-view-buffer-name
                                 rsr/agent-tmux-session rsr/agent-tmux-window))))
-    (let ((kill-buffer-query-functions nil))
-      (dolist (window (get-buffer-window-list view nil t))
-        (quit-restore-window window 'kill))
-      (when (buffer-live-p view)
-        (kill-buffer view))))
+    (save-current-buffer
+      (let ((kill-buffer-query-functions nil))
+        (dolist (window (get-buffer-window-list view nil t))
+          (quit-restore-window window 'kill))
+        (when (buffer-live-p view)
+          (kill-buffer view)))))
   (unless rsr/agent-tmux--window-gone
     (rsr/agent-tmux-kill-window rsr/agent-tmux-window)
     (rsr/agent-tmux-forget-panes)))
@@ -870,7 +884,7 @@ PLAIN, open a plain ghostel shell instead."
   (if plain
       (ghostel)
     (pcase-let ((`(,session . ,dir) (rsr/agent-tmux-target)))
-      (rsr/agent-tmux-show session dir))))
+      (rsr/agent-tmux-show session dir nil t))))
 
 (defun rsr/agent-tmux-agent (program)
   "Open a tracked agent-sessions terminal in a new tmux window and run PROGRAM.
