@@ -975,4 +975,35 @@ shown the tmux session)."
              (rsr/agent-sessions-launch-spawn "" "study" dir "x" "" "" "  " "")))
     (should (= 1 (length (rsr/agent-tmux-test--called "new-window"))))))
 
+;; Inside a repo `rsr/agent-tmux-target' never asks; `C-c i i' must.
+(ert-deftest rsr/agent-tmux-read-target-asks-inside-a-repo ()
+  (let* ((root (file-name-as-directory (make-temp-file "repo-read-" t)))
+         defaults)
+    (unwind-protect
+        (progn
+          (make-directory (expand-file-name ".git" root))
+          (cl-letf (((symbol-function 'rsr/agent-tmux-sessions)
+                     (lambda () '("study" "other")))
+                    ((symbol-function 'rsr/agent-tmux-session-path)
+                     (lambda (s) (and (equal s "other") "/tmp/other/")))
+                    ((symbol-function 'completing-read)
+                     (lambda (_ _ _ _ _ _ default)
+                       (push default defaults)
+                       (if (cdr defaults) "other" default))))
+            (with-temp-buffer
+              (setq default-directory root)
+              ;; Accepting the default keeps the derived session and root.
+              (let ((target (rsr/agent-tmux-read-target)))
+                (should (equal (car target)
+                               (rsr/agent-tmux-session-name
+                                (file-name-nondirectory
+                                 (directory-file-name root)))))
+                (should (equal root (cdr target))))
+              ;; A tmux buffer's own session is the default.
+              (setq-local rsr/agent-tmux-session "study")
+              (should (equal '("other" . "/tmp/other/")
+                             (rsr/agent-tmux-read-target)))
+              (should (equal "study" (car defaults))))))
+      (delete-directory root t))))
+
 ;;; agent-sessions-tmux-test.el ends here

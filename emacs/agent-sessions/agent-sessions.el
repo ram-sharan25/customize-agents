@@ -3957,13 +3957,15 @@ any git repository joins the repo its tmux session was started in (see
 
 (defun rsr/agent-sessions--insert-folder (folder entries)
   "Render FOLDER containing live ENTRIES within its repo.
-The nil folder (sessions in no folder) gets no heading and is skipped when
-empty; its section is kept so `+' and reordering still find the group."
+A folder no live session is in is skipped: it stays saved, offered by the
+`+' and `F' pickers, and shows again once a session joins it.  The nil folder
+(sessions in no folder) gets no heading; its section is kept so `+' and
+reordering still find the group."
   (let* ((id (plist-get folder :id))
          (members (rsr/agent-sessions--folder-entries folder entries))
          (repo-key (rsr/agent-sessions--session-repo
                     (plist-get (car entries) :session))))
-    (when (or id members)
+    (when members
       (magit-insert-section (rsr/agent-session-folder id)
         (when id
           (magit-insert-heading
@@ -5140,13 +5142,18 @@ its identity for the fold state a refresh restores."
   "Create a new vterm in the worktree at point.
 Leaves the dashboard's point on the new terminal's row, so the thing just
 created is what `k', `t', `e' and `n'/`p' act from.  On a repo or folder
-heading, choose among that repo's worktrees.
-
-Where it lands comes from point.  The tmux window opens in the tmux session
-of the row at point, or else of the repo heading, rather than one asked for or
-derived from the checkout's folder name.  The terminal joins the folder of
-the row or folder heading at point; on a repo heading it asks which folder."
+heading, choose among that repo's worktrees.  Where it lands comes from
+point; see `rsr/agent-sessions--new-terminal-at-point'."
   (interactive)
+  (when-let ((buf (rsr/agent-sessions--new-terminal-at-point)))
+    (rsr/agent-sessions--goto-terminal-row buf)))
+
+(defun rsr/agent-sessions--new-terminal-at-point ()
+  "Open a terminal for the dashboard section at point; return it, or nil.
+The tmux window opens in the tmux session of the row at point, or else of the
+repo heading, rather than one asked for or derived from the checkout's folder
+name.  The terminal joins the folder of the row or folder heading at point;
+on a repo heading it asks which folder."
   (let* ((row (rsr/agent-sessions--enclosing-section 'rsr/agent-session-row))
          (row-session (and row (rsr/agent-sessions--session-for-id
                                 (oref row value))))
@@ -5180,7 +5187,7 @@ the row or folder heading at point; on a repo heading it asks which folder."
          (dir (or (plist-get selected :path) (plist-get ctx :path)))
          (name (or (plist-get selected :label) (plist-get ctx :name))))
     (if (or (null dir) (not (file-directory-p dir)))
-        (message "No worktree at point.")
+        (progn (message "No worktree at point.") nil)
       (let* ((folder-id
               (cond (row-session
                      ;; Judged against the heading's repo: an agent outside
@@ -5202,7 +5209,23 @@ the row or folder heading at point; on a repo heading it asks which folder."
           (rsr/agent-sessions--folder-set
            (list :buffer buf :repo-root repo-root) folder-id)
           (rsr/agent-sessions--refresh-if-visible))
-        (rsr/agent-sessions--goto-terminal-row buf)))))
+        buf))))
+
+(defun rsr/agent-sessions--ask-folder-for (buf)
+  "Ask which folder of BUF's repo the new terminal BUF joins, and file it.
+For a terminal opened outside the dashboard, where there is no point to read
+the folder from.  The repo is the one the dashboard lists BUF under: an agent
+outside git belongs to the repo its tmux session started in."
+  (let* ((session (rsr/agent-sessions--terminal-session buf))
+         (repo (rsr/agent-sessions--canonical-path
+                (or (plist-get (rsr/agent-sessions--tmux-home session) :repo-root)
+                    (rsr/agent-sessions--session-repo session)))))
+    (when repo
+      (when-let ((folder (rsr/agent-sessions--read-folder
+                          repo "Folder for the new agent: ")))
+        (rsr/agent-sessions--folder-set (list :buffer buf :repo-root repo)
+                                        (plist-get folder :id))
+        (rsr/agent-sessions--refresh-if-visible)))))
 
 ;;;###autoload
 (defun rsr/agent-session-switch-or-new ()
@@ -5362,7 +5385,13 @@ are exactly what the next render will order."
          (let ((folders (rsr/agent-sessions--apply-manual-order
                          (rsr/agent-sessions--folders-scope rkey)
                          #'rsr/agent-sessions--folder-key
-                         (sort (copy-sequence
+                         ;; Only the folders on screen: an empty one is
+                         ;; hidden, and swapping with it would look like no
+                         ;; move.  Its saved slot survives the splice.
+                         (sort (seq-filter
+                                (lambda (folder)
+                                  (rsr/agent-sessions--folder-entries
+                                   folder (plist-get repo :entries)))
                                 (rsr/agent-sessions--folders-for-repo rkey))
                                (lambda (a b)
                                  (string-lessp (plist-get a :name)

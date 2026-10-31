@@ -170,6 +170,30 @@ workspace.  Elsewhere: a session name read from the user, and DIR."
              (when (string-empty-p name) (user-error "No session name given"))
              (cons (rsr/agent-tmux-session-name name) dir)))))))
 
+(defun rsr/agent-tmux-read-target (&optional dir)
+  "Ask for the tmux session to open in; return (SESSION . DIRECTORY).
+Unlike `rsr/agent-tmux-target', asks inside a repository too.  The default
+is the session of the current tmux buffer, else the one
+`rsr/agent-tmux-target' would derive from DIR.  An existing session opens in
+its own start directory; a new one in DIR's checkout root, or DIR."
+  (let* ((dir (expand-file-name (or dir default-directory)))
+         (derived (pcase (rsr/agent-tmux-checkout dir)
+                    (`(,repo ,worktree ,root)
+                     (cons (rsr/agent-tmux-session-name
+                            (if worktree (concat repo "/" worktree) repo))
+                           root))))
+         (default (or rsr/agent-tmux-session (car derived)))
+         (name (string-trim
+                (completing-read (format-prompt "tmux session" default)
+                                 (rsr/agent-tmux-sessions)
+                                 nil nil nil nil default))))
+    (when (string-empty-p name) (user-error "No session name given"))
+    (let ((session (rsr/agent-tmux-session-name name)))
+      (cons session
+            (or (rsr/agent-tmux-session-path session)
+                (and (equal session (car derived)) (cdr derived))
+                dir)))))
+
 (defvar rsr/agent-tmux--session-paths (make-hash-table :test 'equal)
   "Session name → its start directory, once asked.")
 
@@ -806,6 +830,8 @@ tmux reports the host name when no title was set; that is not a title."
 (declare-function ghostel "ghostel")
 (declare-function rsr/agent-sessions--create-terminal "agent-sessions")
 (declare-function rsr/agent-sessions--terminal-send "agent-sessions")
+(declare-function rsr/agent-sessions--new-terminal-at-point "agent-sessions")
+(declare-function rsr/agent-sessions--ask-folder-for "agent-sessions")
 (defvar rsr/agent-sessions-terminal)
 
 ;;;###autoload
@@ -821,12 +847,21 @@ PLAIN, open a plain ghostel shell instead."
       (rsr/agent-tmux-show session dir))))
 
 (defun rsr/agent-tmux-agent (program)
-  "Open a tracked agent-sessions terminal in a new tmux window and run PROGRAM."
+  "Open a tracked agent-sessions terminal in a new tmux window and run PROGRAM.
+In the dashboard the tmux session and folder come from point, as for `+'.
+Elsewhere both the session (`rsr/agent-tmux-read-target') and the folder
+are asked."
   (require 'agent-sessions)
-  (let* ((rsr/agent-tmux--target (rsr/agent-tmux-target))
-         (rsr/agent-sessions-terminal 'tmux)
-         (buf (rsr/agent-sessions--create-terminal (cdr rsr/agent-tmux--target))))
+  (let* ((rsr/agent-sessions-terminal 'tmux)
+         (buf (if (derived-mode-p 'rsr/agent-sessions-mode)
+                  (or (rsr/agent-sessions--new-terminal-at-point)
+                      (user-error "No worktree at point"))
+                (let ((rsr/agent-tmux--target (rsr/agent-tmux-read-target)))
+                  (rsr/agent-sessions--create-terminal
+                   (cdr rsr/agent-tmux--target))))))
     (rsr/agent-sessions--terminal-send buf program)
+    (unless (derived-mode-p 'rsr/agent-sessions-mode)
+      (rsr/agent-sessions--ask-folder-for buf))
     buf))
 
 ;;;###autoload

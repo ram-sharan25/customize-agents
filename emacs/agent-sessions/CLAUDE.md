@@ -356,6 +356,23 @@ absent levels and survives a dashboard refresh.
 Manual TAB expansion of an individual section also survives refresh: Magit's
 visibility cache records it, so a hook-driven render must not reapply the
 global Shift+TAB level over those individual choices.
+`+` places the new terminal from point instead of asking: on a row it joins
+that row's folder and tmux session, on a folder heading that folder, and on a
+repo heading it asks only for the folder (the same picker as `F`). The tmux
+session is the one the heading names, read from its rows at `+` time rather
+than stored in the repo section's value, because that value is the section's
+identity for restored fold state. Without it `rsr/agent-tmux-target` asks
+"tmux session:" outside git and, inside, names the session after the checkout
+folder (`main`), which is not the user's name for the repo. `C-c i i`/`C-c i p`
+(`rsr/agent-tmux-agent`) do the same from the dashboard; anywhere else there is
+no point to read, so they ask for the tmux session even inside a repo
+(`rsr/agent-tmux-read-target`, defaulting to the current tmux buffer's session
+or the derived one) and then for a folder of the repo the dashboard will list
+the agent under.
+A folder no live session is in is hidden, not deleted: it stays in the
+database, the `+` and `F` pickers still offer it, and it shows again once a
+session joins it. Reordering folders works on the visible ones only, since a
+swap with a hidden neighbour would look like no move.
 `F` on a row moves it to a folder in that repo and creates an unmatched name.
 `F` on a folder heading renames or deletes that repo's folder. Folder names may
 repeat in different repos. SQLite schema version 3 migrates the old global
