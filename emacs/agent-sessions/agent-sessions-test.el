@@ -342,61 +342,10 @@ terminal's registry entry afterwards."
       (kill-buffer older)
       (kill-buffer newer))))
 
-(ert-deftest rsr/agent-sessions-tmux-agents-group-by-tmux-session ()
-  "Non-git tmux agents group by session name; a repo agent stays with its repo."
-  (rsr/agent-sessions-test--with-temp-db
-    (let* ((rsr/agent-sessions-group-by-folder nil)
-           (rsr/agent-sessions-sort-by-activity nil)
-           (shared "/plans/shared/")
-           (entries
-            (list (list :id "a" :session (list :tmux "basemap" :repo "basemap"
-                                               :repo-root shared
-                                               :worktree-path "/plans/overlay/"))
-                  (list :id "b" :session (list :tmux "basemap" :repo "basemap"
-                                               :repo-root shared
-                                               :worktree-path "/plans/artifacts/"))
-                  (list :id "c" :session (list :tmux "customize-agents"
-                                               :repo "customize-agents"
-                                               :repo-root shared
-                                               :worktree-path shared))
-                  (list :id "d" :session (list :tmux nil :repo "my-app"
-                                               :repo-root "/code/my-app/"
-                                               :worktree "my-app (main)"
-                                               :worktree-path "/code/my-app/")))))
-      (cl-letf (((symbol-function 'rsr/agent-sessions--session-tmux-group)
-                 (lambda (session) (plist-get session :tmux)))
-                ;; No tmux session here started inside a repo.
-                ((symbol-function 'rsr/agent-sessions--tmux-home) #'ignore))
-        (let* ((repos (rsr/agent-sessions--build-tree entries))
-               (by-name (lambda (name)
-                          (seq-find (lambda (r) (equal name (plist-get r :name)))
-                                    repos)))
-               (basemap (funcall by-name "basemap"))
-               (agents (funcall by-name "customize-agents"))
-               (app (funcall by-name "my-app")))
-          (should (= (length repos) 3))
-          ;; Two directories, one tmux session: one flat group, not two rows.
-          (should (plist-get basemap :tmux))
-          (should (= (length (plist-get basemap :worktrees)) 1))
-          (should (plist-get (car (plist-get basemap :worktrees)) :flat))
-          (should (equal (mapcar (lambda (e) (plist-get e :id))
-                                 (plist-get (car (plist-get basemap :worktrees))
-                                            :entries))
-                         '("a" "b")))
-          ;; Sharing a start directory no longer merges two tmux sessions.
-          (should (plist-get agents :tmux))
-          (should-not (equal (rsr/agent-sessions--repo-key basemap)
-                             (rsr/agent-sessions--repo-key agents)))
-          ;; A git repo keeps its worktree rows.
-          (should-not (plist-get app :tmux))
-          (should-not (plist-get (car (plist-get app :worktrees)) :flat)))))))
-
 (ert-deftest rsr/agent-sessions-tmux-agents-join-their-sessions-repo ()
   "A non-git tmux agent whose tmux session started in a repo joins that repo."
   (rsr/agent-sessions-test--with-temp-db
-    (let* ((rsr/agent-sessions-group-by-folder nil)
-           (rsr/agent-sessions-sort-by-activity nil)
-           (rsr/agent-sessions-inline-single-worktree t)
+    (let* ((rsr/agent-sessions-sort-by-activity nil)
            (home (list :repo "my-app" :repo-root "/code/my-app/"
                        :worktree "my-app (main)" :worktree-name "my-app"
                        :branch "main" :worktree-path "/code/my-app/"))
@@ -417,32 +366,69 @@ terminal's registry entry afterwards."
         (clrhash rsr/agent-sessions--tmux-home-cache)
         (let ((repos (rsr/agent-sessions--build-tree entries)))
           (should (= (length repos) 1))
-          (should-not (plist-get (car repos) :tmux))
           (should (equal (plist-get (car repos) :name) "my-app"))
-          ;; Both land in the session's worktree, so it can be named inline.
-          (should (equal (mapcar (lambda (e) (plist-get e :id))
-                                 (plist-get (car (plist-get (car repos) :worktrees))
-                                            :entries))
+          (should (equal (sort (mapcar (lambda (e) (plist-get e :id))
+                                       (plist-get (car repos) :entries))
+                               #'string<)
                          '("a" "b")))
           ;; The registry's own record is untouched.
           (should (equal (plist-get planner :worktree-path) "/plans/x/")))))))
 
-(ert-deftest rsr/agent-sessions-tmux-group-heading-uses-tmux-icon ()
-  (with-temp-buffer
-    (rsr/agent-sessions-mode)
-    (let ((inhibit-read-only t)
-          (rsr/agent-sessions-icons t)
-          icons)
-      (cl-letf (((symbol-function 'rsr/agent-sessions--icon)
-                 (lambda (kind &optional _) (push kind icons) ""))
-                ((symbol-function 'rsr/agent-sessions--insert-note) #'ignore)
-                ((symbol-function 'rsr/agent-sessions--insert-worktree) #'ignore))
-        (magit-insert-section (rsr/agent-sessions-root)
-          (rsr/agent-sessions--insert-repo
-           (list :name "customize-agents" :root "/plans/" :tmux t))
-          (rsr/agent-sessions--insert-repo
-           (list :name "customize-agents" :root "/code/customize-agents/"))))
-      (should (equal (reverse icons) '(tmux repo))))))
+(ert-deftest rsr/agent-sessions-repo-is-named-after-its-tmux-session ()
+  "A repo's heading is the tmux session most of its agents run in, so a
+checkout folder called `main' does not name the project."
+  (rsr/agent-sessions-test--with-temp-db
+    (let* ((rsr/agent-sessions-sort-by-activity nil)
+           (proxy (lambda (tmux)
+                    (let ((buf (generate-new-buffer " *proxy*")))
+                      (with-current-buffer buf
+                        (setq major-mode 'rsr/agent-tmux-mode)
+                        (setq-local rsr/agent-tmux-session tmux))
+                      buf)))
+           (a (funcall proxy "tina"))
+           (b (funcall proxy "tina"))
+           (c (funcall proxy "elsewhere"))
+           (plain (generate-new-buffer " *plain*"))
+           (session (lambda (buf)
+                      (list :buffer buf :repo "main"
+                            :repo-root "/projects/tina/main/"
+                            :worktree-path "/projects/tina/main/")))
+           (entries (mapcar (lambda (buf)
+                              (list :id (buffer-name buf)
+                                    :session (funcall session buf)))
+                            (list a b c))))
+      (unwind-protect
+          (cl-letf (((symbol-function 'rsr/agent-sessions--tmux-home) #'ignore))
+            (should (equal (plist-get (car (rsr/agent-sessions--build-tree entries))
+                                      :name)
+                           "tina"))
+            ;; With no agent in tmux, the checkout's own name stands in.
+            (should (equal (plist-get
+                            (car (rsr/agent-sessions--build-tree
+                                  (list (list :id "p"
+                                              :session (funcall session plain)))))
+                            :name)
+                           "main")))
+        (mapc #'kill-buffer (list a b c plain))))))
+
+(ert-deftest rsr/agent-sessions-folder-heading-names-the-shared-worktree ()
+  "A row repeats its `@' label only when it differs from its folder's."
+  (let* ((rsr/agent-sessions-worktree-label 'folder)
+         (session (lambda (wt folder)
+                    (list :worktree-name wt :folder folder
+                          :worktree-path (concat "/nonexistent/" wt "/"))))
+         (entries (list (list :id "a" :session (funcall session "card" 1))
+                        (list :id "b" :session (funcall session "card" 1))
+                        (list :id "c" :session (funcall session "option-a" 1))
+                        (list :id "d" :session (funcall session "card" nil)))))
+    (cl-letf (((symbol-function 'rsr/agent-sessions--folder-for-session)
+               (lambda (session) (plist-get session :folder))))
+      (should (equal (rsr/agent-sessions--shared-at-label (seq-take entries 3))
+                     "@card"))
+      (should (equal (mapcar (lambda (e) (plist-get e :at-label))
+                             (rsr/agent-sessions--label-entries entries))
+                     ;; A row in no folder has no heading, so it keeps its label.
+                     '(nil nil "@option-a" "@card"))))))
 
 (defmacro rsr/agent-sessions-test--with-git-repo (var &rest body)
   "Run BODY with VAR bound to a fresh git repo on branch `main'."
@@ -492,76 +478,6 @@ terminal's registry entry afterwards."
                    "@dev"))
     (should (equal (rsr/agent-sessions--at-label "/nonexistent/wt/" nil nil)
                    "@wt"))))
-
-(defun rsr/agent-sessions-test--render-repo (repo)
-  "Render REPO into a fresh dashboard buffer; return its text."
-  (with-temp-buffer
-    (rsr/agent-sessions-mode)
-    (let ((inhibit-read-only t)
-          (rsr/agent-sessions-icons nil)
-          (rsr/agent-sessions-group-by-folder nil))
-      (cl-letf (((symbol-function 'rsr/agent-sessions--insert-note) #'ignore)
-                ((symbol-function 'rsr/agent-sessions--insert-entries)
-                 (lambda (entries)
-                   (dolist (e entries)
-                     (insert "    ROW " (plist-get e :id) "\n")))))
-        (magit-insert-section (rsr/agent-sessions-root)
-          (rsr/agent-sessions--insert-repo repo))))
-    (buffer-substring-no-properties (point-min) (point-max))))
-
-(ert-deftest rsr/agent-sessions-single-worktree-goes-inline ()
-  (let* ((rsr/agent-sessions-worktree-label 'branch)
-         (main (list :label "app (main)" :path "/nonexistent/app/" :name "app"
-                     :branch "main" :entries (list (list :id "a"))))
-         (empty (list :label "app-x (x)" :path "/nonexistent/app-x/"
-                      :name "app-x" :branch "x" :entries nil))
-         (repo (list :name "app" :root "/nonexistent/app/"
-                     :worktrees (list empty main))))
-    (let ((rsr/agent-sessions-inline-single-worktree t))
-      ;; Its sessions sit under the repo line; the empty worktree keeps a row.
-      (should (equal (rsr/agent-sessions-test--render-repo repo)
-                     "app @main\n    ROW a\n  @x\n\n")))
-    (let ((rsr/agent-sessions-inline-single-worktree nil))
-      (should (equal (rsr/agent-sessions-test--render-repo repo)
-                     "app\n  @x\n  @main\n    ROW a\n\n")))))
-
-(ert-deftest rsr/agent-sessions-several-worktrees-keep-their-rows ()
-  (let* ((rsr/agent-sessions-inline-single-worktree t)
-         (rsr/agent-sessions-worktree-label 'branch)
-         (repo (list :name "app" :root "/nonexistent/app/"
-                     :worktrees
-                     (list (list :path "/nonexistent/app/" :name "app"
-                                 :branch "main" :entries (list (list :id "a")))
-                           (list :path "/nonexistent/app-x/" :name "app-x"
-                                 :branch "x" :entries (list (list :id "b")))))))
-    (should (equal (rsr/agent-sessions-test--render-repo repo)
-                   "app\n  @main\n    ROW a\n  @x\n    ROW b\n\n"))))
-
-(ert-deftest rsr/agent-sessions-empty-worktree-row-is-dim ()
-  (with-temp-buffer
-    (rsr/agent-sessions-mode)
-    (let ((inhibit-read-only t)
-          (rsr/agent-sessions-icons nil))
-      (cl-letf (((symbol-function 'rsr/agent-sessions--insert-note) #'ignore))
-        (magit-insert-section (rsr/agent-sessions-root)
-          (rsr/agent-sessions--insert-worktree
-           (list :path "/nonexistent/app-x/" :name "app-x" :branch "x"))))
-      (goto-char (point-min))
-      (search-forward "@x")
-      (should (memq 'rsr/agent-session-detail
-                    (ensure-list (get-text-property (1- (point))
-                                                    'font-lock-face)))))))
-
-(ert-deftest rsr/agent-sessions-flat-worktree-has-no-heading ()
-  (with-temp-buffer
-    (rsr/agent-sessions-mode)
-    (let ((inhibit-read-only t))
-      (cl-letf (((symbol-function 'rsr/agent-sessions--insert-entries)
-                 (lambda (_) (insert "ROW\n"))))
-        (magit-insert-section (rsr/agent-sessions-root)
-          (rsr/agent-sessions--insert-worktree
-           (list :label "basemap" :path "/plans/" :flat t :entries nil))))
-      (should (equal (buffer-string) "ROW\n")))))
 
 (ert-deftest rsr/agent-sessions-opening-from-side-window-does-not-split ()
   "Opening sessions from the side-window dashboard reuses the main window."

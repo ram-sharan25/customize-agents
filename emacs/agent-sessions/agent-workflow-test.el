@@ -159,11 +159,10 @@
 (ert-deftest rsr/agent-workflow-open-menu-on-headings-uses-their-directory ()
   (let ((dir (file-name-as-directory (make-temp-file "worktree-" t))))
     (let ((default-directory dir)) (call-process "git" nil nil nil "init" "-q"))
-    (dolist (type '(rsr/agent-session-worktree rsr/agent-session-repo))
-      (rsr/agent-workflow-test--at-section type (list :path dir :root dir)
-        (rsr/agent-workflow-test--recording-openers
-          (rsr/agent-workflow-open-folder "code")
-          (should (equal opened (list (list 'magit dir)))))))))
+    (rsr/agent-workflow-test--at-section 'rsr/agent-session-repo (list :root dir)
+      (rsr/agent-workflow-test--recording-openers
+        (rsr/agent-workflow-open-folder "code")
+        (should (equal opened (list (list 'magit dir))))))))
 
 (ert-deftest rsr/agent-workflow-open-menu-on-headings-uses-sessions-folders ()
   "A heading whose directory is a Plans folder, not a repo, opens what the
@@ -187,8 +186,8 @@ sessions under it registered, and asks when there are several."
                  (lambda (_prompt collection &rest _)
                    (setq offered (all-completions "" collection))
                    plans-b)))
-        (rsr/agent-workflow-test--at-section 'rsr/agent-session-worktree
-            (list :path heading-dir)
+        (rsr/agent-workflow-test--at-section 'rsr/agent-session-repo
+            (list :root heading-dir)
           (dolist (id '("t-h1" "t-h2"))
             (let ((row (magit-section)))
               (oset row type 'rsr/agent-session-row)

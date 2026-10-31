@@ -121,7 +121,7 @@ answer \"whose workers are these\" without consulting the message log.")
 Lives on the buffer rather than in the session plist because the plist is
 rebuilt from scratch on every hook event, and because plain terminals that
 have never fired a hook need the same key.  See
-`rsr/agent-sessions--sort-tree-stable'.")
+`rsr/agent-sessions--sort-entries'.")
 
 (defvar-local rsr/agent-session--viewed-at nil
   "When the user most recently selected this terminal buffer.
@@ -154,12 +154,6 @@ agent-sessions-tmux.el), shown in Emacs through ghostel."
                  (const :tag "ghostel" ghostel)
                  (const :tag "tmux" tmux)))
 
-(defcustom rsr/agent-sessions-show-all-worktrees nil
-  "Legacy option retained for compatibility.
-Worktrees are now a session column; `+' on a repo or folder offers all of its
-worktrees, including those with no session."
-  :type 'boolean)
-
 (defcustom rsr/agent-session-notify-on-attention t
   "When non-nil, show a desktop notification when a session needs attention.
 The notification fires only on the transition into `needs-attention'/`error',
@@ -181,10 +175,6 @@ rows keep their creation order and never move on their own.  Toggle with `S'
 \(`rsr/agent-sessions-toggle-attention-sort').  Has no effect while `s'
 \(activity order) is on."
   :type 'boolean)
-
-(defvar rsr/agent-sessions-group-by-folder nil
-  "When non-nil, display repo → folder → session.
-The other view displays repo → worktree → session.  Toggle with `f'.")
 
 (defcustom rsr/agent-sessions-icons t
   "When non-nil, start each dashboard line with an icon saying what it is.
@@ -209,14 +199,6 @@ sit beside the work.  nil opens it in an ordinary window via `pop-to-buffer'."
   "What a worktree is shown as after its `@': its branch or its folder name.
 A branch label falls back to the folder name on a detached HEAD."
   :type '(choice (const branch) (const folder))
-  :group 'rsr/agent-sessions)
-
-(defcustom rsr/agent-sessions-inline-single-worktree t
-  "When non-nil, a repo with sessions in only one worktree names it inline.
-That worktree's row is dropped and the repo line reads `repo @branch', with
-the sessions directly beneath it.  Empty worktrees listed by
-`rsr/agent-sessions-show-all-worktrees' keep their own rows."
-  :type 'boolean
   :group 'rsr/agent-sessions)
 
 (defconst rsr/agent-session-status-alist
@@ -1353,13 +1335,9 @@ render shares the width, so stated and unstated titles still line up."
                                 (rsr/agent-sessions--session-worktree-name session)
                                 (rsr/agent-sessions--session-branch session)))
 
-(defun rsr/agent-sessions--worktree-at-label (wt)
-  "The `@' label of worktree WT, a plist with :path, :name and :branch."
-  (rsr/agent-sessions--at-label (plist-get wt :path) (plist-get wt :name)
-                                (plist-get wt :branch)))
-
-(defvar-local rsr/agent-sessions--worktree-column-width 1
-  "Width of the worktree name column in the current dashboard render.")
+(defvar-local rsr/agent-sessions--worktree-column-width 0
+  "Width of the `@' column of session rows in the current dashboard render.
+Zero when every row's folder heading names its worktree.")
 
 ;;;; Line icons and part faces
 ;;
@@ -1394,7 +1372,7 @@ render shares the width, so stated and unstated titles still line up."
 
 (defface rsr/agent-session-worktree-name
   '((t :inherit font-lock-string-face))
-  "Face for the worktree column of a session row in the folder view.")
+  "Face for the `@' worktree label on a folder heading and a session row.")
 
 (defface rsr/agent-session-detail
   '((t :inherit shadow))
@@ -1543,10 +1521,7 @@ indentation conveys the relationship."
                                 (propertize "└ " 'font-lock-face
                                             'rsr/agent-session-detail))
                       ""))
-         (base "    ")
-         (folder (and (not rsr/agent-sessions-group-by-folder)
-                      (rsr/agent-sessions--folder
-                       (rsr/agent-sessions--folder-for-session session)))))
+         (base "    "))
     ;; Record what this row *shows*, for `N'/`P' (see the variable's docstring).
     (push (cons (line-beginning-position) status) rsr/agent-sessions--row-status)
     (push (cons (line-beginning-position) (plist-get session :buffer))
@@ -1558,12 +1533,12 @@ indentation conveys the relationship."
       (magit-insert-heading
         (rsr/agent-sessions--row-text
          (concat base connector
-                 (when rsr/agent-sessions-group-by-folder
-                   (propertize
-                    (format
-                     (format "%%-%ds" rsr/agent-sessions--worktree-column-width)
-                     (rsr/agent-sessions--session-at-label session))
-                    'font-lock-face 'rsr/agent-session-worktree-name))
+                 ;; Blank when the folder heading already names this worktree.
+                 (propertize
+                  (format
+                   (format "%%-%ds" rsr/agent-sessions--worktree-column-width)
+                   (or (plist-get entry :at-label) ""))
+                  'font-lock-face 'rsr/agent-session-worktree-name)
                  marker
                  (rsr/agent-sessions--icon (plist-get session :agent-type))
                  (propertize (format "%-7s " (or (plist-get session :agent-type) ""))
@@ -1572,16 +1547,13 @@ indentation conveys the relationship."
          (concat title
                  (rsr/agent-orchestration--row-badge id)
                  (rsr/agent-sessions--detail
-                  (if folder (format "  [%s]" (plist-get folder :name)) ""))
-                 (rsr/agent-sessions--detail
                   (if (and branched-from (not suppress-parent-note))
                       (format "  ↳ from %s" (cdr branched-from))
                     ""))
                  (rsr/agent-sessions--detail
                   ;; The `@' column already names the branch unless it is set
                   ;; to show folders.
-                  (if-let ((branch (and rsr/agent-sessions-group-by-folder
-                                       (eq rsr/agent-sessions-worktree-label 'folder)
+                  (if-let ((branch (and (eq rsr/agent-sessions-worktree-label 'folder)
                                        (rsr/agent-sessions--session-branch session))))
                       (format "  (%s)" branch)
                     ""))
@@ -1645,40 +1617,6 @@ once."
         ;; still renders, at top level.
         (dolist (e entries) (emit e 0 nil))))))
 
-(defun rsr/agent-sessions--worktrees-for (root session-groups)
-  "Return the ordered worktree plists to render for a repo.
-SESSION-GROUPS is an alist of (CANONICAL-PATH . ENTRIES).  When
-`rsr/agent-sessions-show-all-worktrees' is set and ROOT is known, every
-git worktree is listed (in git order), merging in any sessions; otherwise
-only the worktrees that actually have sessions are returned.
-Each element is (:label L :path P :entries ENTRIES)."
-  (let (result seen)
-    (when (and rsr/agent-sessions-show-all-worktrees root)
-      (dolist (wt (rsr/agent-sessions--all-worktrees root))
-        (let* ((path (plist-get wt :path))
-               (canon (rsr/agent-sessions--canonical-path path)))
-          (push canon seen)
-          (push (list :label (plist-get wt :label)
-                      :path path
-                      :entries (cdr (assoc canon session-groups)))
-                result))))
-    (dolist (sg session-groups)
-      (unless (member (car sg) seen)
-        (let ((session (plist-get (car (cdr sg)) :session)))
-          (push (list :label (or (plist-get session :worktree) "?")
-                      ;; Fall back to the live buffer's directory so `+' works
-                      ;; even for sessions registered before :worktree-path
-                      ;; was tracked (stale registry entries).
-                      :path (or (plist-get session :worktree-path)
-                                (let ((buf (plist-get session :buffer)))
-                                  (and (buffer-live-p buf)
-                                       (buffer-local-value 'default-directory buf))))
-                      :name (rsr/agent-sessions--session-worktree-name session)
-                      :branch (rsr/agent-sessions--session-branch session)
-                      :entries (cdr sg))
-                result))))
-    (nreverse result)))
-
 (defun rsr/agent-sessions--entry-time (entry)
   "The :updated-at time of ENTRY's session, or nil."
   (plist-get (plist-get entry :session) :updated-at))
@@ -1701,28 +1639,6 @@ Items whose TIME-FN returns nil (no activity, e.g. empty worktrees) sort last."
             (cond ((and ta tb) (time-less-p tb ta))
                   (ta t)
                   (t nil))))))
-
-(defun rsr/agent-sessions--sort-tree (repos)
-  "Sort REPOS, each repo's worktrees, and each worktree's sessions by recency."
-  (rsr/agent-sessions--by-recency
-   (lambda (repo)
-     (rsr/agent-sessions--entries-time
-      (mapcan (lambda (wt) (copy-sequence (plist-get wt :entries)))
-              (plist-get repo :worktrees))))
-   (mapcar
-    (lambda (repo)
-      (plist-put
-       repo :worktrees
-       (rsr/agent-sessions--by-recency
-        (lambda (wt) (rsr/agent-sessions--entries-time (plist-get wt :entries)))
-        (mapcar
-         (lambda (wt)
-           (plist-put wt :entries
-                      (rsr/agent-sessions--by-recency
-                       #'rsr/agent-sessions--entry-time
-                       (plist-get wt :entries))))
-         (plist-get repo :worktrees)))))
-    repos)))
 
 (defconst rsr/agent-sessions--status-rank
   '((error . 0) (needs-attention . 1) (running . 2))
@@ -2250,13 +2166,12 @@ is *killed* mid-exit the reap still has a recent time to date the crash from."
 ;;; Manual order ------------------------------------------------------------
 ;;
 ;; `M-n' / `M-p' nudge the thing at point within its group, overriding the
-;; automatic order of `--sort-tree-stable' for that group only.
+;; automatic order of `--build-tree' for that group only.
 
 (defvar rsr/agent-sessions--order nil
   "Hash table SCOPE -> ordered list of item keys, or nil before first load.
 One scope per group that can be reordered: the repo list, each repo's
-worktrees and folders, and each worktree's or folder's sessions.  A scope is
-a list — (\"worktrees\"
+folders, and each folder's sessions.  A scope is a list — (\"folders\"
 REPO-KEY) and friends — rather than a joined string, so no separator character
 can ever appear inside a path component and blur two scopes together.
 
@@ -2266,9 +2181,6 @@ a session — its buffer name, the only session-level identity that can outlive
 a restart.  Backed by the `order_entries' table.")
 
 (defconst rsr/agent-sessions--repos-scope '("repos"))
-
-(defun rsr/agent-sessions--worktrees-scope (repo-key)
-  (list "worktrees" repo-key))
 
 (defun rsr/agent-sessions--sessions-scope (repo-key worktree-key)
   (list "sessions" repo-key worktree-key))
@@ -2283,21 +2195,9 @@ a restart.  Backed by the `order_entries' table.")
   (format "%s" (or (plist-get folder :id) "none")))
 
 (defun rsr/agent-sessions--repo-key (repo)
-  "Manual-order key for REPO: its canonical root, else its display name.
-A tmux group is keyed by its session name, since two tmux sessions can share a
-start directory and must still order, and take notes, apart."
-  (if (plist-get repo :tmux)
-      (concat "tmux:" (plist-get repo :name))
-    (or (rsr/agent-sessions--canonical-path (plist-get repo :root))
-        (plist-get repo :name)
-        "?")))
-
-(defun rsr/agent-sessions--worktree-key (wt)
-  "Manual-order key for worktree WT: its canonical path, else its label.
-Only ever compared within one repo's scope, so the label fallback can't
-collide with a like-named worktree of another repo."
-  (or (rsr/agent-sessions--canonical-path (plist-get wt :path))
-      (plist-get wt :label)
+  "Manual-order key for REPO: its canonical root, else its display name."
+  (or (rsr/agent-sessions--canonical-path (plist-get repo :root))
+      (plist-get repo :name)
       "?"))
 
 (defun rsr/agent-sessions--order-scope-row (scope)
@@ -2385,42 +2285,6 @@ than displacing anything the user placed deliberately."
                                     (lambda (a b) (< (car a) (car b)))))
                 (nreverse rest))))))
 
-(defun rsr/agent-sessions--sort-tree-stable (repos)
-  "Order REPOS alphabetically, their worktrees alphabetically, rows by attention,
-then apply any manual order (`M-n' / `M-p') on top at each level.
-The automatic tree skeleton is deliberately *not* ordered by activity or
-attention: a fixed repo/worktree layout is what makes the dashboard navigable
-from memory.  Urgency surfaces within a worktree instead, via `--sort-entries'.
-A manually placed group overrides that for the items the user positioned; the
-rest keep the automatic order after them."
-  (rsr/agent-sessions--apply-manual-order
-   rsr/agent-sessions--repos-scope
-   #'rsr/agent-sessions--repo-key
-   (sort (mapcar
-          (lambda (repo)
-            (let ((rkey (rsr/agent-sessions--repo-key repo)))
-              (plist-put
-               repo :worktrees
-               (rsr/agent-sessions--apply-manual-order
-                (rsr/agent-sessions--worktrees-scope rkey)
-                #'rsr/agent-sessions--worktree-key
-                (sort (mapcar
-                       (lambda (wt)
-                         (plist-put
-                          wt :entries
-                          (rsr/agent-sessions--apply-manual-order
-                           (rsr/agent-sessions--sessions-scope
-                            rkey (rsr/agent-sessions--worktree-key wt))
-                           #'rsr/agent-sessions--entry-buffer-name
-                           (rsr/agent-sessions--sort-entries
-                            (plist-get wt :entries)))))
-                       (plist-get repo :worktrees))
-                      (lambda (a b) (string< (or (plist-get a :label) "")
-                                             (or (plist-get b :label) ""))))))))
-          repos)
-         (lambda (a b) (string< (or (plist-get a :name) "")
-                                (or (plist-get b :name) ""))))))
-
 ;;; Notes -------------------------------------------------------------------
 ;;
 ;; `e' attaches a free-form, multi-line note to the repo, worktree, or session
@@ -2460,10 +2324,6 @@ all a plain terminal has to be identified by.  See
 (defun rsr/agent-sessions--repo-note-key (repo)
   "Note key for REPO, a plist with :root/:name (a repo section's value)."
   (list "repo" (rsr/agent-sessions--repo-key repo)))
-
-(defun rsr/agent-sessions--worktree-note-key (wt)
-  "Note key for worktree WT, a plist with :path/:label."
-  (list "worktree" (rsr/agent-sessions--worktree-key wt)))
 
 (defun rsr/agent-sessions--session-note-keys (session)
   "Note keys to try for SESSION, most durable identity first.
@@ -2912,10 +2772,6 @@ re-edits the note point is sitting in."
        (let ((value (oref section value)))
          (cons (list (rsr/agent-sessions--repo-note-key value))
                (or (plist-get value :name) "repo"))))
-      ('rsr/agent-session-worktree
-       (let ((value (oref section value)))
-         (cons (list (rsr/agent-sessions--worktree-note-key value))
-               (or (plist-get value :label) "worktree"))))
       ('rsr/agent-session-file
        (let ((path (oref section value)))
          (cons (list (rsr/agent-sessions--file-note-key path))
@@ -3974,158 +3830,122 @@ same path under another session by magit's parent chain."
   (dolist (file (rsr/agent-sessions--session-files session))
     (rsr/agent-sessions--insert-file file indent)))
 
+(defun rsr/agent-sessions--entries-tmux-session (entries)
+  "The tmux session most of ENTRIES run in, or nil when none runs in tmux.
+Each repository is meant to have one tmux session, named by the user, so that
+name is what its heading shows.  Counting rather than taking the first agent's
+keeps one stray agent launched from elsewhere from renaming the repo."
+  (let (counts)
+    (dolist (e entries)
+      (let ((buf (plist-get (plist-get e :session) :buffer)))
+        (when-let* (((buffer-live-p buf))
+                    ((rsr/agent-tmux-proxy-p buf))
+                    (name (buffer-local-value 'rsr/agent-tmux-session buf)))
+          (setf (alist-get name counts 0 nil #'equal)
+                (1+ (alist-get name counts 0 nil #'equal))))))
+    (car (car (sort counts (lambda (a b) (> (cdr a) (cdr b))))))))
+
+(defun rsr/agent-sessions--shared-at-label (entries)
+  "The `@' label most of ENTRIES share, or nil when ENTRIES is empty.
+A folder heading shows it, so its rows need repeat only a different one."
+  (let (counts)
+    (dolist (e entries)
+      (let ((label (rsr/agent-sessions--session-at-label (plist-get e :session))))
+        (setf (alist-get label counts 0 nil #'equal)
+              (1+ (alist-get label counts 0 nil #'equal)))))
+    (car (car (sort (nreverse counts) (lambda (a b) (> (cdr a) (cdr b))))))))
+
+(defun rsr/agent-sessions--label-entries (entries)
+  "ENTRIES, each carrying the `@' label its row shows as `:at-label'.
+A row in a folder shows its label only when it differs from the one its
+folder heading shows; a row in no folder has no heading and always shows it."
+  (let ((shared (mapcar (lambda (group)
+                          (cons (car group)
+                                (and (car group)
+                                     (rsr/agent-sessions--shared-at-label
+                                      (cdr group)))))
+                        (seq-group-by (lambda (e)
+                                        (rsr/agent-sessions--folder-for-session
+                                         (plist-get e :session)))
+                                      entries))))
+    (mapcar (lambda (e)
+              (let* ((session (plist-get e :session))
+                     (label (rsr/agent-sessions--session-at-label session))
+                     (folder-label
+                      (cdr (assoc (rsr/agent-sessions--folder-for-session session)
+                                  shared))))
+                (append (list :at-label (unless (equal label folder-label) label))
+                        e)))
+            entries)))
+
 (defun rsr/agent-sessions--build-tree (entries)
-  "Group live ENTRIES into repos, with worktrees in the non-folder view.
-An agent outside any git repository joins the repo its tmux session was
-started in (see `rsr/agent-sessions--tmux-home').  When that is not a repo
-either, the non-folder view groups it by its tmux session, and the group has
-a single headingless worktree: the tmux
-session is the whole context, so a worktree row would only repeat its name.
-Keying such groups by start directory merged unrelated tmux sessions that
-happened to share one, and split one session across its agents' directories."
-  (let ((repos
-         (mapcar
-          (lambda (rg)
-            (let* ((rentries (cdr rg))
-                   (session (plist-get (car rentries) :session))
-                   (root (rsr/agent-sessions--session-repo session))
-                   (tmux (and (eq (car-safe (car rg)) 'tmux) (cdr (car rg)))))
-              (append
-               (list :name (or tmux (plist-get session :repo) "?")
-                     :root root :entries rentries)
-               (when tmux
-                 (list :tmux t
-                       :worktrees (list (list :label tmux :path root :flat t
-                                              :entries rentries))))
-               (unless (or tmux rsr/agent-sessions-group-by-folder)
-                 (list :worktrees
-                       (rsr/agent-sessions--worktrees-for
-                        root
-                        (seq-group-by
-                         (lambda (e)
-                           (rsr/agent-sessions--canonical-path
-                            (plist-get (plist-get e :session) :worktree-path)))
-                         rentries)))))))
-          (seq-group-by
-           (lambda (e)
-             (let* ((session (plist-get e :session))
-                    (tmux (and (not rsr/agent-sessions-group-by-folder)
-                               (not (plist-get e :adopted))
-                               (rsr/agent-sessions--session-tmux-group session))))
-               (if tmux
-                   (cons 'tmux tmux)
-                 (rsr/agent-sessions--session-repo session))))
-           (rsr/agent-sessions--adopt-tmux-entries entries)))))
-    (if (not rsr/agent-sessions-group-by-folder)
-        (if rsr/agent-sessions-sort-by-activity
-            (rsr/agent-sessions--sort-tree repos)
-          (rsr/agent-sessions--sort-tree-stable repos))
-      (let ((sorted
-           (mapcar
-            (lambda (repo)
-              (let ((items (plist-get repo :entries)))
-                (plist-put repo :entries
-                           (if rsr/agent-sessions-sort-by-activity
-                               (rsr/agent-sessions--by-recency
-                                #'rsr/agent-sessions--entry-time items)
-                             (rsr/agent-sessions--apply-manual-order
-                              (rsr/agent-sessions--sessions-scope
-                               (rsr/agent-sessions--repo-key repo) "")
-                              #'rsr/agent-sessions--entry-buffer-name
-                              (rsr/agent-sessions--sort-entries items))))))
-            repos)))
-      (if rsr/agent-sessions-sort-by-activity
-          (rsr/agent-sessions--by-recency
-           (lambda (repo) (rsr/agent-sessions--entries-time
-                           (plist-get repo :entries))) sorted)
-        (rsr/agent-sessions--apply-manual-order
-         rsr/agent-sessions--repos-scope #'rsr/agent-sessions--repo-key
-         (sort sorted (lambda (a b) (string< (plist-get a :name)
-                                            (plist-get b :name))))))))))
-
-(defun rsr/agent-sessions--insert-worktree (wt)
-  "Insert worktree WT; a `:flat' one (a tmux group's) gets no heading row.
-The section is kept even without a heading, because reordering a row looks
-up its group through the enclosing worktree section."
-  (let ((entries (plist-get wt :entries)))
-    (magit-insert-section (rsr/agent-session-worktree
-                           (list :label (plist-get wt :label)
-                                 :path (plist-get wt :path)
-                                 :flat (plist-get wt :flat)))
-      (unless (plist-get wt :flat)
-        (magit-insert-heading
-          (if rsr/agent-sessions-group-by-folder "    " "  ")
-          (rsr/agent-sessions--icon 'worktree)
-          ;; Dim a worktree with no sessions: listed only so `+' can use it.
-          (propertize (rsr/agent-sessions--worktree-at-label wt)
-                      'font-lock-face (if entries
-                                          'magit-section-heading
-                                        'rsr/agent-session-detail)))
-        (rsr/agent-sessions--insert-note
-         (list (rsr/agent-sessions--worktree-note-key wt))
-         (if rsr/agent-sessions-group-by-folder "      " "    ")))
-      (rsr/agent-sessions--insert-entries entries))))
-
-(defun rsr/agent-sessions--inline-worktree (repo)
-  "The worktree REPO names on its own line, or nil.
-That is its only worktree with sessions, when
-`rsr/agent-sessions-inline-single-worktree' is on, in the worktree view, for
-a git repo (a tmux group has no worktree to name)."
-  (when (and rsr/agent-sessions-inline-single-worktree
-             (not rsr/agent-sessions-group-by-folder)
-             (not (plist-get repo :tmux)))
-    (let ((occupied (seq-filter (lambda (wt) (plist-get wt :entries))
-                                (plist-get repo :worktrees))))
-      (and (= (length occupied) 1) (car occupied)))))
+  "Group live ENTRIES into repos, each named after its agents' tmux session.
+The tmux session is the user's name for the repository; the git checkout's
+folder name is only the fallback, since with worktrees kept together inside
+a project folder the main checkout is often called `main'.  An agent outside
+any git repository joins the repo its tmux session was started in (see
+`rsr/agent-sessions--tmux-home')."
+  (let* ((repos
+          (mapcar
+           (lambda (rentries)
+             (let ((session (plist-get (car rentries) :session)))
+               (list :name (or (rsr/agent-sessions--entries-tmux-session rentries)
+                               (plist-get session :repo) "?")
+                     :root (rsr/agent-sessions--session-repo session)
+                     :entries (rsr/agent-sessions--label-entries rentries))))
+           (mapcar #'cdr
+                   (seq-group-by
+                    (lambda (e)
+                      (rsr/agent-sessions--session-repo (plist-get e :session)))
+                    (rsr/agent-sessions--adopt-tmux-entries entries)))))
+         (sorted
+          (mapcar
+           (lambda (repo)
+             (let ((items (plist-get repo :entries)))
+               (plist-put repo :entries
+                          (if rsr/agent-sessions-sort-by-activity
+                              (rsr/agent-sessions--by-recency
+                               #'rsr/agent-sessions--entry-time items)
+                            (rsr/agent-sessions--apply-manual-order
+                             (rsr/agent-sessions--sessions-scope
+                              (rsr/agent-sessions--repo-key repo) "")
+                             #'rsr/agent-sessions--entry-buffer-name
+                             (rsr/agent-sessions--sort-entries items))))))
+           repos)))
+    (if rsr/agent-sessions-sort-by-activity
+        (rsr/agent-sessions--by-recency
+         (lambda (repo) (rsr/agent-sessions--entries-time
+                         (plist-get repo :entries))) sorted)
+      (rsr/agent-sessions--apply-manual-order
+       rsr/agent-sessions--repos-scope #'rsr/agent-sessions--repo-key
+       (sort sorted (lambda (a b) (string< (plist-get a :name)
+                                          (plist-get b :name))))))))
 
 (defun rsr/agent-sessions--insert-repo (repo)
-  (let ((inline (rsr/agent-sessions--inline-worktree repo)))
-    (magit-insert-section (rsr/agent-session-repo
-                           (list :name (plist-get repo :name)
-                                 :root (plist-get repo :root)
-                                 :tmux (plist-get repo :tmux)
-                                 ;; RET on the line opens the inlined worktree.
-                                 :path (and inline (plist-get inline :path))))
-      (magit-insert-heading
-        ;; A tmux group can share its name with a repo; the icon tells them apart.
-        (rsr/agent-sessions--icon (if (plist-get repo :tmux) 'tmux 'repo))
-        (propertize (plist-get repo :name) 'font-lock-face 'rsr/agent-session-repo)
-        (if inline
-            (propertize (concat " " (rsr/agent-sessions--worktree-at-label inline))
-                        'font-lock-face 'rsr/agent-session-detail)
-          ""))
-      (rsr/agent-sessions--insert-note
-       (list (rsr/agent-sessions--repo-note-key repo))
-       "  ")
-      ;; The inlined worktree has no row of its own, so its note shows here.
-      (when inline
-        (rsr/agent-sessions--insert-note
-         (list (rsr/agent-sessions--worktree-note-key inline))
-         "  "))
-      (if rsr/agent-sessions-group-by-folder
-          (progn
-            ;; Sessions in no folder sit directly under the repo, before the
-            ;; folders: after them they would read as the last folder's rows.
-            (rsr/agent-sessions--insert-folder (list :id nil)
-                                               (plist-get repo :entries))
-            (dolist (folder (rsr/agent-sessions--apply-manual-order
-                             (rsr/agent-sessions--folders-scope
-                              (rsr/agent-sessions--repo-key repo))
-                             #'rsr/agent-sessions--folder-key
-                             (sort (copy-sequence
-                                    (rsr/agent-sessions--folders-for-repo
-                                     (rsr/agent-sessions--repo-key repo)))
-                                   (lambda (a b)
-                                     (string-lessp (plist-get a :name)
-                                                   (plist-get b :name))))))
-              (rsr/agent-sessions--insert-folder folder (plist-get repo :entries))))
-        (when inline
-          (rsr/agent-sessions--insert-worktree
-           (plist-put (copy-sequence inline) :flat t)))
-        (dolist (wt (plist-get repo :worktrees))
-          (unless (eq wt inline)
-            (rsr/agent-sessions--insert-worktree wt))))
-      (insert "\n"))))
+  (magit-insert-section (rsr/agent-session-repo
+                         (list :name (plist-get repo :name)
+                               :root (plist-get repo :root)))
+    (magit-insert-heading
+      (rsr/agent-sessions--icon 'repo)
+      (propertize (plist-get repo :name) 'font-lock-face 'rsr/agent-session-repo))
+    (rsr/agent-sessions--insert-note
+     (list (rsr/agent-sessions--repo-note-key repo))
+     "  ")
+    ;; Sessions in no folder sit directly under the repo, before the folders:
+    ;; after them they would read as the last folder's rows.
+    (rsr/agent-sessions--insert-folder (list :id nil) (plist-get repo :entries))
+    (dolist (folder (rsr/agent-sessions--apply-manual-order
+                     (rsr/agent-sessions--folders-scope
+                      (rsr/agent-sessions--repo-key repo))
+                     #'rsr/agent-sessions--folder-key
+                     (sort (copy-sequence
+                            (rsr/agent-sessions--folders-for-repo
+                             (rsr/agent-sessions--repo-key repo)))
+                           (lambda (a b)
+                             (string-lessp (plist-get a :name)
+                                           (plist-get b :name))))))
+      (rsr/agent-sessions--insert-folder folder (plist-get repo :entries)))
+    (insert "\n")))
 
 (defun rsr/agent-sessions--folder-entries (folder entries)
   "Return live ENTRIES assigned to FOLDER, including No folder."
@@ -4151,7 +3971,11 @@ empty; its section is kept so `+' and reordering still find the group."
             (rsr/agent-sessions--icon 'folder)
             (propertize (format "%s (%d)" (plist-get folder :name)
                                 (length members))
-                        'font-lock-face 'magit-section-heading)))
+                        'font-lock-face 'magit-section-heading)
+            (if-let ((label (rsr/agent-sessions--shared-at-label members)))
+                (propertize (concat "  " label)
+                            'font-lock-face 'rsr/agent-session-worktree-name)
+              "")))
         (rsr/agent-sessions--insert-entries
          (if rsr/agent-sessions-sort-by-activity
              members
@@ -4198,14 +4022,19 @@ empty; its section is kept so `+' and reordering still find the group."
                                                   "")))
                                            entries))))
                 (if (zerop widest) 0 (1+ widest))))
-        (setq rsr/agent-sessions--worktree-column-width
-              (1+ (apply #'max 0
-                         (mapcar (lambda (entry)
-                                   (string-width
-                                    (rsr/agent-sessions--session-at-label
-                                     (plist-get entry :session))))
-                                 entries))))
         (let ((repos (rsr/agent-sessions--build-tree entries)))
+          ;; Sized by the labels rows show, so a dashboard whose folders name
+          ;; every worktree gives the column no width at all.
+          (setq rsr/agent-sessions--worktree-column-width
+                (let ((widest (apply #'max 0
+                                     (mapcar (lambda (entry)
+                                               (string-width
+                                                (or (plist-get entry :at-label) "")))
+                                             (mapcan (lambda (repo)
+                                                       (copy-sequence
+                                                        (plist-get repo :entries)))
+                                                     repos)))))
+                  (if (zerop widest) 0 (1+ widest))))
           (if (null repos)
               (insert "No active sessions.\n")
             (dolist (repo repos)
@@ -4251,11 +4080,9 @@ empty; its section is kept so `+' and reordering still find the group."
   "Return SECTION's hierarchy depth, inheriting it for auxiliary sections."
   (pcase (oref section type)
     ('rsr/agent-session-repo 0)
-    ;; A headingless worktree has no line to fold to, so it takes its repo's
-    ;; depth and its rows fold with the repo's other children.
-    ('rsr/agent-session-worktree
-     (if (plist-get (oref section value) :flat) parent-depth 1))
-    ;; Likewise the headingless group of sessions in no folder.
+    ;; The headingless group of sessions in no folder has no line to fold to,
+    ;; so it takes its repo's depth and its rows fold with the repo's other
+    ;; children.
     ('rsr/agent-session-folder (if (oref section value) 1 parent-depth))
     ('rsr/agent-session-row 2)
     ((or 'rsr/agent-session-file 'rsr/agent-session-link) 3)
@@ -4513,9 +4340,9 @@ replace; see `rsr/agent-sessions--display-buffer-ace-if-several'."
            (if (buffer-live-p buf)
                (rsr/agent-sessions--show-terminal buf)
              (message "No session at point."))))
-        ((or 'rsr/agent-session-worktree 'rsr/agent-session-repo)
+        ('rsr/agent-session-repo
          (let* ((value (oref section value))
-                (dir (or (plist-get value :path) (plist-get value :root))))
+                (dir (plist-get value :root)))
            (if (and dir (file-directory-p dir))
                (rsr/agent-sessions--switch-project dir)
              (message "No worktree directory at point."))))
@@ -5042,23 +4869,29 @@ them, a cycle is a poor way to reach a particular one."
                          (path (plist-get session :worktree-path)))
                (throw 'found (list :path path
                                    :name (plist-get session :worktree)))))
-            ('rsr/agent-session-worktree
-             (throw 'found (list :path (plist-get value :path)
-                                 :name (plist-get value :label))))
             ('rsr/agent-session-repo
              (throw 'found (list :path (plist-get value :root)
                                  :name (plist-get value :name))))))
         (setq section (oref section parent)))
       nil)))
 
-(defun rsr/agent-sessions-toggle-folder-view ()
-  "Toggle between repo rows and repo/folder grouping."
-  (interactive)
-  (setq rsr/agent-sessions-group-by-folder
-        (not rsr/agent-sessions-group-by-folder))
-  (rsr/agent-sessions--refresh)
-  (message "Grouping by %s"
-           (if rsr/agent-sessions-group-by-folder "repo and folder" "repo")))
+;; Shared by `F' and `+', so moving a session and placing a new one offer the
+;; same choices.
+(defun rsr/agent-sessions--read-folder (repo prompt)
+  "Read one of REPO's folders with PROMPT; return it, or nil for \"No folder\".
+A name matching no folder creates one in REPO."
+  (let* ((folders (rsr/agent-sessions--folders-for-repo repo))
+         (choice (completing-read
+                  prompt
+                  (append (mapcar (lambda (item) (plist-get item :name)) folders)
+                          '("No folder")))))
+    (cond ((string-equal-ignore-case choice "No folder") nil)
+          ((string-empty-p (string-trim choice))
+           (user-error "Enter a folder name"))
+          (t (or (seq-find (lambda (item)
+                             (string-equal-ignore-case choice (plist-get item :name)))
+                           folders)
+                 (rsr/agent-sessions--folder-create choice repo))))))
 
 (defun rsr/agent-sessions-folder-action ()
   "Move the session at point, manage a folder heading, or create a folder."
@@ -5081,21 +4914,9 @@ them, a cycle is a poor way to reach a particular one."
              (nearby (save-excursion
                        (goto-char (oref row start))
                        (rsr/agent-sessions--nearby-session-id)))
-             (session-repo (rsr/agent-sessions--session-repo session))
-             (folders (rsr/agent-sessions--folders-for-repo session-repo))
-             (names (mapcar (lambda (item) (plist-get item :name)) folders))
-             (choice (completing-read
-                      "Move session to folder: "
-                      (append names '("No folder"))))
-             (destination
-              (cond ((string-equal-ignore-case choice "No folder") nil)
-                    ((string-empty-p (string-trim choice))
-                     (user-error "Enter a folder name"))
-                    (t (or (seq-find (lambda (item)
-                                       (string-equal-ignore-case
-                                        choice (plist-get item :name)))
-                                     folders)
-                           (rsr/agent-sessions--folder-create choice session-repo))))))
+             (destination (rsr/agent-sessions--read-folder
+                           (rsr/agent-sessions--session-repo session)
+                           "Move session to folder: ")))
         (rsr/agent-sessions--folder-set session (plist-get destination :id))
         (rsr/agent-sessions--refresh)
         (or (and nearby (rsr/agent-sessions--goto-session-id nearby))
@@ -5301,22 +5122,49 @@ displays its own point, not the buffer's."
         (dolist (win (get-buffer-window-list dashboard nil t))
           (set-window-point win (point)))))))
 
+(defun rsr/agent-sessions--section-tmux-session (section)
+  "The tmux session the rows under SECTION run in, as its heading names it.
+Read from the rows rather than kept in the section's value, which is also
+its identity for the fold state a refresh restores."
+  (let (entries)
+    (cl-labels ((walk (s)
+                  (if (eq (oref s type) 'rsr/agent-session-row)
+                      (when-let ((session (rsr/agent-sessions--session-for-id
+                                           (oref s value))))
+                        (push (list :session session) entries))
+                    (mapc #'walk (oref s children)))))
+      (walk section))
+    (rsr/agent-sessions--entries-tmux-session entries)))
+
 (defun rsr/agent-sessions-new-vterm ()
   "Create a new vterm in the worktree at point.
 Leaves the dashboard's point on the new terminal's row, so the thing just
 created is what `k', `t', `e' and `n'/`p' act from.  On a repo or folder
-heading, choose among that repo's worktrees."
+heading, choose among that repo's worktrees.
+
+Where it lands comes from point.  The tmux window opens in the tmux session
+of the row at point, or else of the repo heading, rather than one asked for or
+derived from the checkout's folder name.  The terminal joins the folder of
+the row or folder heading at point; on a repo heading it asks which folder."
   (interactive)
   (let* ((row (rsr/agent-sessions--enclosing-section 'rsr/agent-session-row))
+         (row-session (and row (rsr/agent-sessions--session-for-id
+                                (oref row value))))
+         (row-buf (plist-get row-session :buffer))
          (ctx (rsr/agent-sessions--context-at-point))
-         (folder-section (and rsr/agent-sessions-group-by-folder
-                              (rsr/agent-sessions--enclosing-section
-                               'rsr/agent-session-folder)))
-         (folder-id (and folder-section (oref folder-section value)))
+         (folder-section (rsr/agent-sessions--enclosing-section
+                          'rsr/agent-session-folder))
          (repo-section (rsr/agent-sessions--enclosing-section
                         'rsr/agent-session-repo))
-         (repo-root (and repo-section
-                         (plist-get (oref repo-section value) :root)))
+         (repo (and repo-section (oref repo-section value)))
+         (repo-root (plist-get repo :root))
+         (tmux-session (or (and (buffer-live-p row-buf)
+                                (rsr/agent-tmux-proxy-p row-buf)
+                                (buffer-local-value 'rsr/agent-tmux-session
+                                                    row-buf))
+                           (and repo-section
+                                (rsr/agent-sessions--section-tmux-session
+                                 repo-section))))
          (worktrees (and (not row) repo-root
                          (rsr/agent-sessions--all-worktrees repo-root)))
          (selected (cond ((null worktrees) nil)
@@ -5333,7 +5181,23 @@ heading, choose among that repo's worktrees."
          (name (or (plist-get selected :label) (plist-get ctx :name))))
     (if (or (null dir) (not (file-directory-p dir)))
         (message "No worktree at point.")
-      (let ((buf (rsr/agent-sessions--create-terminal dir name)))
+      (let* ((folder-id
+              (cond (row-session
+                     ;; Judged against the heading's repo: an agent outside
+                     ;; git listed under it carries its own directory.
+                     (rsr/agent-sessions--folder-for-session
+                      (plist-put (copy-sequence row-session)
+                                 :repo-root repo-root)))
+                    (folder-section (oref folder-section value))
+                    (repo-root
+                     (plist-get (rsr/agent-sessions--read-folder
+                                 (rsr/agent-sessions--canonical-path repo-root)
+                                 "Folder for the new agent: ")
+                                :id))))
+             (rsr/agent-tmux--target (if tmux-session
+                                         (cons tmux-session dir)
+                                       rsr/agent-tmux--target))
+             (buf (rsr/agent-sessions--create-terminal dir name)))
         (when folder-id
           (rsr/agent-sessions--folder-set
            (list :buffer buf :repo-root repo-root) folder-id)
@@ -5493,12 +5357,6 @@ are exactly what the next render will order."
        (list rsr/agent-sessions--repos-scope
              (mapcar #'rsr/agent-sessions--repo-key repos)
              rkey))
-      ('rsr/agent-session-worktree
-       (when repo
-         (list (rsr/agent-sessions--worktrees-scope rkey)
-               (mapcar #'rsr/agent-sessions--worktree-key
-                       (plist-get repo :worktrees))
-               (rsr/agent-sessions--worktree-key (oref section value)))))
       ('rsr/agent-session-folder
        (when repo
          (let ((folders (rsr/agent-sessions--apply-manual-order
@@ -5515,37 +5373,21 @@ are exactly what the next render will order."
       ('rsr/agent-session-row
        (let ((session (rsr/agent-sessions--session-for-id (oref section value))))
          (when (and repo session)
-           (if rsr/agent-sessions-group-by-folder
-               (let* ((folder-id (rsr/agent-sessions--folder-for-session session))
-                      (folder (or (rsr/agent-sessions--folder folder-id)
-                                  (list :id nil :name "No folder")))
-                      (members (rsr/agent-sessions--folder-entries
-                                folder (plist-get repo :entries))))
-                 (list (rsr/agent-sessions--folder-sessions-scope rkey folder-id)
-                       (mapcar #'rsr/agent-sessions--entry-buffer-name
-                               (if rsr/agent-sessions-sort-by-activity
-                                   members
-                                 (rsr/agent-sessions--apply-manual-order
-                                  (rsr/agent-sessions--folder-sessions-scope
-                                   rkey folder-id)
-                                  #'rsr/agent-sessions--entry-buffer-name
-                                  members)))
-                       (rsr/agent-sessions--session-buffer-name session)))
-             (let* ((wt-sec (rsr/agent-sessions--enclosing-section
-                             'rsr/agent-session-worktree))
-                    (wt-key (and wt-sec
-                                 (rsr/agent-sessions--worktree-key
-                                  (oref wt-sec value))))
-                    (wt (seq-find
-                         (lambda (candidate)
-                           (equal wt-key (rsr/agent-sessions--worktree-key
-                                          candidate)))
-                         (plist-get repo :worktrees))))
-               (when wt
-                 (list (rsr/agent-sessions--sessions-scope rkey wt-key)
-                       (mapcar #'rsr/agent-sessions--entry-buffer-name
-                               (plist-get wt :entries))
-                       (rsr/agent-sessions--session-buffer-name session))))))))
+           (let* ((folder-id (rsr/agent-sessions--folder-for-session session))
+                  (folder (or (rsr/agent-sessions--folder folder-id)
+                              (list :id nil :name "No folder")))
+                  (members (rsr/agent-sessions--folder-entries
+                            folder (plist-get repo :entries))))
+             (list (rsr/agent-sessions--folder-sessions-scope rkey folder-id)
+                   (mapcar #'rsr/agent-sessions--entry-buffer-name
+                           (if rsr/agent-sessions-sort-by-activity
+                               members
+                             (rsr/agent-sessions--apply-manual-order
+                              (rsr/agent-sessions--folder-sessions-scope
+                               rkey folder-id)
+                              #'rsr/agent-sessions--entry-buffer-name
+                              members)))
+                   (rsr/agent-sessions--session-buffer-name session))))))
       ('rsr/agent-session-file
        (let* ((row (rsr/agent-sessions--enclosing-section 'rsr/agent-session-row))
               (session (and row (rsr/agent-sessions--session-for-id
@@ -7692,7 +7534,6 @@ out one that is already taken — or hide one that just became available."
   #'rsr/agent-sessions-toggle-overview)
 (define-key rsr/agent-sessions-mode-map (kbd "s") #'rsr/agent-sessions-toggle-sort)
 (define-key rsr/agent-sessions-mode-map (kbd "S") #'rsr/agent-sessions-toggle-attention-sort)
-(define-key rsr/agent-sessions-mode-map (kbd "f") #'rsr/agent-sessions-toggle-folder-view)
 (define-key rsr/agent-sessions-mode-map (kbd "F") #'rsr/agent-sessions-folder-action)
 (define-key rsr/agent-sessions-mode-map (kbd "+") #'rsr/agent-sessions-new-vterm)
 (define-key rsr/agent-sessions-mode-map (kbd "n") #'rsr/agent-sessions-next)

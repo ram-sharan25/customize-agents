@@ -277,8 +277,8 @@ session as if the user had."
   "Folders of KIND (\"code\" or \"plans\") for the dashboard thing at point.
 On a session row these are the folders its workflow stage registered with
 `emacs-share folder'; nothing else is consulted, so a session that registered
-nothing has no known folder rather than a guessed one.  On a worktree,
-repository or folder heading they are the folders registered by every session
+nothing has no known folder rather than a guessed one.  On a repository
+or folder heading they are the folders registered by every session
 under it, and for code also the heading's own directory when it is a git
 repository (a workflow session runs in its Plans folder, so its heading's
 directory is often not code at all).  Returns a list of directories, possibly
@@ -287,8 +287,7 @@ empty."
     (when (and section (eq (oref section type) 'rsr/agent-session-note))
       (setq section (oref section parent)))
     (pcase (and section (oref section type))
-      ((or 'rsr/agent-session-worktree 'rsr/agent-session-repo
-           'rsr/agent-session-folder)
+      ((or 'rsr/agent-session-repo 'rsr/agent-session-folder)
        (let* ((value (oref section value))
               (dir (and (consp value)
                         (or (plist-get value :path) (plist-get value :root))))

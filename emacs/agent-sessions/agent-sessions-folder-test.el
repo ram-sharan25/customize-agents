@@ -83,7 +83,7 @@
             (should (equal 2 (length (rsr/agent-sessions--folders-for-repo repo)))))
         (delete-directory root t)))))
 
-(ert-deftest rsr/folders-render-repo-folder-and-worktree-column ()
+(ert-deftest rsr/folders-render-repo-folder-and-worktree-label ()
   (rsr/folder-test-with-db
     (let* ((root (make-temp-file "repo-render-" t))
            (terminal (generate-new-buffer " *render-terminal*"))
@@ -108,45 +108,29 @@
               (rsr/agent-sessions-mode)
               (cl-letf (((symbol-function 'rsr/agent-sessions--live-entries)
                          (lambda () (list entry))))
-                (let ((rsr/agent-sessions-group-by-folder t))
-                  (rsr/agent-sessions--refresh)
-                  (should (string-match-p "sample-repo\n  Tasks (1)"
-                                          (buffer-string)))
-                  ;; No session is outside a folder, so nothing stands for one.
-                  (should-not (string-match-p "No folder" (buffer-string)))
-                  ;; The `@' column names the branch, so no trailing copy.
-                  (should (string-match-p "@feature/test +.*Task$"
-                                          (buffer-string))))
-                (let ((rsr/agent-sessions-group-by-folder nil))
-                  (rsr/agent-sessions--refresh)
-                  (should (string-match-p
-                           (concat (regexp-quote
-                                    "sample-repo @feature/test\n")
-                                   "    .*Task.*\\[Tasks\\]")
-                           (buffer-string)))
-                  (let ((row (seq-find
-                              (lambda (line) (string-match-p "Task" line))
-                              (split-string (buffer-string) "\n" t))))
-                    (should-not (string-match-p "sample-worktree" row))
-                    (should-not (string-match-p "feature/test" row)))
-                  (setq rsr/agent-sessions--overview-level 1)
-                  (rsr/agent-sessions--show-overview-level 1)
-                  (rsr/agent-sessions--refresh)
-                  ;; The inlined worktree has no line to fold to; its rows
-                  ;; fold as the repo's children instead.
-                  (let* ((repo-section
-                          (car (oref magit-root-section children)))
-                         (worktree-section
-                          (car (oref repo-section children)))
-                         (row-section
-                          (car (oref worktree-section children))))
-                    (should-not (oref repo-section hidden))
-                    (should-not (oref worktree-section hidden))
-                    (should (oref row-section hidden)))
-                  (setq rsr/agent-sessions--overview-level 3)
-                  (rsr/agent-sessions--show-overview-level 3)
-                  (rsr/agent-sessions--refresh)
-                  (should (= rsr/agent-sessions--overview-level 2))))))
+                (rsr/agent-sessions--refresh)
+                ;; The folder heading names the worktree its rows share.
+                (should (string-match-p "sample-repo\n  Tasks (1)  @feature/test\n"
+                                        (buffer-string)))
+                ;; No session is outside a folder, so nothing stands for one.
+                (should-not (string-match-p "No folder" (buffer-string)))
+                ;; The row does not repeat it, so the column has no width.
+                (should (= rsr/agent-sessions--worktree-column-width 0))
+                (let ((row (seq-find
+                            (lambda (line) (string-match-p "Task$" line))
+                            (split-string (buffer-string) "\n" t))))
+                  (should-not (string-match-p "feature/test" row)))
+                (setq rsr/agent-sessions--overview-level 1)
+                (rsr/agent-sessions--show-overview-level 1)
+                (rsr/agent-sessions--refresh)
+                (let* ((repo-section (car (oref magit-root-section children)))
+                       (folder-section
+                        (seq-find (lambda (child) (oref child value))
+                                  (oref repo-section children)))
+                       (row-section (car (oref folder-section children))))
+                  (should-not (oref repo-section hidden))
+                  (should (oref folder-section hidden))
+                  (should (oref row-section hidden))))))
         (mapc #'kill-buffer (list terminal dashboard))
         (delete-directory root t)))))
 
@@ -173,13 +157,13 @@
             (rsr/agent-sessions--folder-set filed (plist-get folder :id))
             (with-current-buffer dashboard
               (rsr/agent-sessions-mode)
-              (let ((rsr/agent-sessions-group-by-folder t))
+              (progn
                 (cl-letf (((symbol-function 'rsr/agent-sessions--live-entries)
                            (lambda () entries)))
                   (rsr/agent-sessions--refresh)
                   (should-not (string-match-p "No folder" (buffer-string)))
                   (should (string-match-p
-                           "^repo\n    .*Loose task\n  Tasks (1)\n    .*Filed task"
+                           "^repo\n    .*Loose task\n  Tasks (1)  @wt\n    .*Filed task"
                            (buffer-string)))
                   ;; The loose row folds with the repo's children, as a
                   ;; headingless group has no line of its own to fold to.
@@ -210,7 +194,7 @@
       (unwind-protect
           (with-current-buffer dashboard
             (rsr/agent-sessions-mode)
-            (let ((rsr/agent-sessions-group-by-folder t))
+            (progn
               (cl-letf (((symbol-function 'rsr/agent-sessions--live-entries)
                          (lambda () entries)))
                 (rsr/agent-sessions--refresh)
@@ -253,7 +237,7 @@
             (rsr/agent-sessions--folder-set b-session (plist-get one :id))
             (with-current-buffer dashboard
               (rsr/agent-sessions-mode)
-              (let ((rsr/agent-sessions-group-by-folder t))
+              (progn
                 (cl-letf (((symbol-function 'rsr/agent-sessions--live-entries)
                            (lambda () entries)))
                   (rsr/agent-sessions--refresh)
@@ -352,9 +336,8 @@
       (magit-insert-section (rsr/agent-sessions-root)
         (magit-insert-section (rsr/agent-session-repo '(:name "repo"))
           (magit-insert-heading "repo")
-          (magit-insert-section
-              (rsr/agent-session-worktree '(:label "worktree"))
-            (magit-insert-heading "worktree")
+          (magit-insert-section (rsr/agent-session-folder 1)
+            (magit-insert-heading "folder")
             (magit-insert-section (rsr/agent-session-row "s")
               (magit-insert-heading "session"))))))
     (let* ((repo (car (oref magit-root-section children)))
@@ -385,7 +368,7 @@
       (unwind-protect
           (with-current-buffer dashboard
             (rsr/agent-sessions-mode)
-            (let ((rsr/agent-sessions-group-by-folder nil))
+            (progn
               (cl-letf (((symbol-function 'rsr/agent-sessions--live-entries)
                          (lambda () (list entry)))
                         ((symbol-function 'rsr/agent-sessions--session-files)
@@ -394,16 +377,16 @@
                 (setq rsr/agent-sessions--overview-level 2)
                 (rsr/agent-sessions--show-overview-level 2)
                 (let* ((repo (car (oref magit-root-section children)))
-                       (worktree (car (oref repo children)))
-                       (row (car (oref worktree children))))
+                       (loose (car (oref repo children)))
+                       (row (car (oref loose children))))
                   (should (oref row hidden))
                   ;; Opening one row with TAB must survive an unrelated hook
                   ;; refresh while the global Shift+TAB level stays at two.
                   (magit-section-show row))
                 (rsr/agent-sessions--refresh)
                 (let* ((repo (car (oref magit-root-section children)))
-                       (worktree (car (oref repo children)))
-                       (row (car (oref worktree children))))
+                       (loose (car (oref repo children)))
+                       (row (car (oref loose children))))
                   (should-not (oref row hidden))
                   (goto-char (point-min))
                   (search-forward (file-name-nondirectory path))
@@ -532,5 +515,68 @@
         (mapc #'kill-buffer (list parent-buf child-buf chosen-buf))
         (delete-directory root t)
         (delete-directory other-root t)))))
+
+(ert-deftest rsr/folders-new-terminal-placed-from-point ()
+  "`+' takes the tmux session and folder from point, asking only on a repo."
+  (rsr/folder-test-with-db
+    (let* ((root (make-temp-file "repo-new-" t))
+           (repo (rsr/agent-sessions--canonical-path root))
+           (terminal (generate-new-buffer " *new-terminal*"))
+           (dashboard (generate-new-buffer " *new-dashboard*"))
+           (rsr/agent-sessions-icons nil)
+           (rsr/agent-sessions (make-hash-table :test 'equal))
+           (folder (rsr/agent-sessions--folder-create "Tasks" repo))
+           (session (list :buffer terminal :repo "main" :repo-root root
+                          :worktree-name "main" :worktree-path root
+                          :agent-session-id "filed"))
+           (entries (list (list :id "filed" :title "Filed task"
+                                :session session)))
+           targets assigned prompts)
+      (unwind-protect
+          (progn
+            (puthash "filed" session rsr/agent-sessions)
+            (with-current-buffer terminal
+              (setq major-mode 'rsr/agent-tmux-mode
+                    rsr/agent-tmux-session "study"))
+            (rsr/agent-sessions--folder-set session (plist-get folder :id))
+            (with-current-buffer dashboard
+              (rsr/agent-sessions-mode)
+              (cl-letf (((symbol-function 'rsr/agent-sessions--live-entries)
+                         (lambda () entries))
+                        ((symbol-function 'rsr/agent-sessions--all-worktrees)
+                         #'ignore)
+                        ((symbol-function 'rsr/agent-sessions--create-terminal)
+                         (lambda (&rest _)
+                           (push rsr/agent-tmux--target targets)
+                           (generate-new-buffer " *created*")))
+                        ((symbol-function 'rsr/agent-sessions--folder-set)
+                         (lambda (_ id) (push id assigned)))
+                        ((symbol-function 'completing-read)
+                         (lambda (prompt &rest _) (push prompt prompts) "Tasks"))
+                        ((symbol-function 'rsr/agent-sessions--refresh-if-visible)
+                         #'ignore)
+                        ((symbol-function 'rsr/agent-sessions--goto-terminal-row)
+                         #'ignore))
+                (rsr/agent-sessions--refresh)
+                (dolist (where '("^study" "^  Tasks" "Filed task"))
+                  (goto-char (point-min))
+                  (re-search-forward where)
+                  (beginning-of-line)
+                  (rsr/agent-sessions-new-vterm))
+                ;; The repo's tmux session every time, never asked for.
+                (should (equal (make-list 3 (cons "study" repo))
+                               (mapcar (lambda (target)
+                                         (cons (car target)
+                                               (rsr/agent-sessions--canonical-path
+                                                (cdr target))))
+                                       targets)))
+                ;; Every terminal joins Tasks; only the repo heading asked.
+                (should (equal (make-list 3 (plist-get folder :id)) assigned))
+                (should (equal '("Folder for the new agent: ") prompts)))))
+        (dolist (buf (buffer-list))
+          (when (string-prefix-p " *created*" (buffer-name buf))
+            (kill-buffer buf)))
+        (mapc #'kill-buffer (list terminal dashboard))
+        (delete-directory root t)))))
 
 ;;; agent-sessions-folder-test.el ends here
