@@ -2,8 +2,8 @@
 
 ;; The planning workflow's Emacs side: the `C-c i w' keys that open a session
 ;; with a stage skill loaded (top-level, or as a child of a session), bring-in
-;; of a child's findings, and the dashboard's `O' menu (open a session's code
-;; or Plans folder).  Kept out of agent-sessions.el, which is the dashboard
+;; of a child's findings, the dashboard's `O' menu (open a session's code
+;; or Plans folder), and `a' (the user's own review in Plannotator).  Kept out of agent-sessions.el, which is the dashboard
 ;; itself; this file only adds commands that use it.  Sessions are opened by
 ;; the core launcher, bin/agent-launch, so the keys and the agents' own
 ;; children start sessions the same way.
@@ -438,6 +438,136 @@ it; with none on a heading, say so and open nothing."
 
 ;; Capital: `o' is the dashboard's "open in other window", as in dired.
 (define-key rsr/agent-sessions-mode-map (kbd "O") #'rsr/agent-workflow-open-menu)
+
+;;;; `a': the user's own review of a task document, in Plannotator
+
+(defcustom rsr/agent-workflow-plannotator "plannotator"
+  "The Plannotator command `rsr/agent-workflow-annotate' runs."
+  :type 'string
+  :group 'rsr/agent-sessions)
+
+(defconst rsr/agent-workflow-annotate-documents
+  '("plan.org" "requirements.org" "decisions.org")
+  "The task documents `rsr/agent-workflow-annotate' offers, in this order.")
+
+(defun rsr/agent-workflow--document-status (file)
+  "The `#+status:' of FILE, or \"?\" when it has none."
+  (with-temp-buffer
+    (insert-file-contents file nil 0 4096)
+    (if (re-search-forward "^#\\+status:[ \t]*\\(.*\\)$" nil t)
+        (string-trim (match-string 1))
+      "?")))
+
+(defun rsr/agent-workflow--annotate-argv (doc result)
+  "The Plannotator arguments to review DOC, publishing the decision to RESULT."
+  (list "annotate" doc "--gate" "--json" "--result-file" result))
+
+(defun rsr/agent-workflow--write-human-review (dir task doc status decision)
+  "Write the user's review of DOC into DIR; return the summary path.
+STATUS is DOC's `#+status:' when it was opened.  DECISION is Plannotator's
+record, an alist with `decision' and `feedback'.  The findings file keeps the
+feedback verbatim: it is the user's own words, so nothing here ranks or
+rewrites it."
+  (let* ((verdict (alist-get 'decision decision))
+         (feedback (string-trim (or (alist-get 'feedback decision) "")))
+         (findings (expand-file-name "findings.md" dir))
+         (summary (expand-file-name "summary.md" dir))
+         (date (format-time-string "%Y-%m-%d")))
+    (with-temp-file findings
+      (insert (format "# Human review — %s\n" (file-name-nondirectory
+                                                  (directory-file-name task)))
+              (format "Reviewed: %s (#+status: %s) · %s · reviewer: the user, in Plannotator\n"
+                      doc status date)
+              (format "Decision: %s\n\n" verdict)
+              "## Feedback\n\n"
+              (if (string-empty-p feedback) "- none" feedback)
+              "\n"))
+    (with-temp-file summary
+      (insert (format "What: the user's own review of %s: %s%s.\n"
+                      (file-name-nondirectory doc) verdict
+                      (if (string-empty-p feedback) ", no feedback" ", with feedback"))
+              (format "Where: %s\n" findings)
+              (format "Open: %s\n"
+                      (cond ((string-empty-p feedback) "nothing")
+                            ((equal verdict "approved")
+                             "the notes are guidance, not change requests")
+                            (t "address each annotation in the findings file")))))
+    summary))
+
+(defun rsr/agent-workflow--annotate-finished (proc session task doc status dir result)
+  "Handle Plannotator PROC's exit for SESSION's review of DOC in TASK.
+A decision with feedback, or an approval, is written into DIR and its summary
+shared under SESSION as ready to bring in, so `y' hands it over when the user
+chooses; a dismissal or a failure leaves nothing behind."
+  (let ((output (with-current-buffer (process-buffer proc) (buffer-string)))
+        (decision (and (file-exists-p result)
+                       (ignore-errors
+                         (with-temp-buffer
+                           (insert-file-contents result)
+                           (json-parse-buffer :object-type 'alist))))))
+    (kill-buffer (process-buffer proc))
+    (cond
+     ((and (null decision) (not (equal (process-exit-status proc) 0)))
+      (delete-directory dir t)
+      (message "Plannotator failed: %s" (string-trim output)))
+     ((or (null decision) (equal (alist-get 'decision decision) "dismissed"))
+      (delete-directory dir t)
+      (message "Plannotator closed without a decision; nothing saved"))
+     (t
+      (let ((summary (rsr/agent-workflow--write-human-review
+                      dir task doc status decision)))
+        (rsr/agent-sessions--share-file
+         session summary
+         (format "human-review %s: ready to bring in" (file-name-nondirectory doc)))
+        (rsr/agent-sessions--refresh-if-visible)
+        (message "Your review of %s is ready to bring in (y)"
+                 (file-name-nondirectory doc)))))))
+
+(defun rsr/agent-workflow-annotate ()
+  "Review a task document of the session at point yourself, in Plannotator.
+Asks which document of the session's Plans folder (or, with none registered,
+which task folder, and registers it), then opens it in Plannotator's browser
+view.  The process runs asynchronously, since the review waits on the user for
+as long as they take.  When the user decides, the review lands under the
+session as ready to bring in, the same as a review child's, so the agent sees
+it only when `y' hands it over."
+  (interactive)
+  (pcase-let* ((`(,_id . ,session) (rsr/agent-workflow--parent-session))
+               (task (or (car (seq-filter #'file-directory-p
+                                          (rsr/agent-sessions--session-folder-paths
+                                           session "plans")))
+                         (let ((task (or (rsr/agent-workflow--read-task)
+                                         (user-error "A review needs a task folder"))))
+                           (rsr/agent-sessions--register-folder session "plans" task)
+                           task)))
+               (docs (seq-filter (lambda (name)
+                                   (file-exists-p (expand-file-name name task)))
+                                 rsr/agent-workflow-annotate-documents))
+               (doc (expand-file-name
+                     (if docs
+                         (completing-read "Review which document? " docs nil t)
+                       (user-error "No task documents in %s" task))
+                     task))
+               (status (rsr/agent-workflow--document-status doc))
+               (dir (rsr/agent-workflow--child-dir task "human-review"))
+               (result (expand-file-name "decision.json" dir)))
+    (make-process
+     :name "plannotator"
+     :buffer (generate-new-buffer " *plannotator*")
+     :command (cons rsr/agent-workflow-plannotator
+                    (rsr/agent-workflow--annotate-argv doc result))
+     :connection-type 'pipe
+     ;; Quitting Emacs ends the review; asking first is the only warning.
+     :noquery nil
+     :sentinel
+     (lambda (proc _event)
+       (unless (process-live-p proc)
+         (rsr/agent-workflow--annotate-finished
+          proc session task doc status dir result))))
+    (message "Plannotator opened %s in the browser" (file-name-nondirectory doc))))
+
+(define-key rsr/agent-workflow-map (kbd "a") (cons "annotate" #'rsr/agent-workflow-annotate))
+(define-key rsr/agent-sessions-mode-map (kbd "a") #'rsr/agent-workflow-annotate)
 
 (provide 'agent-workflow)
 ;;; agent-workflow.el ends here

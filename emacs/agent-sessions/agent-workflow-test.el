@@ -505,5 +505,135 @@ returns, standing in for the `emacsclient' call a blocked Emacs never answers."
                          '("agent-launch failed: agent-launch: tmux session not found"))))
       (delete-directory dir t))))
 
+;;;; `a': the user's review in Plannotator
+
+(defmacro rsr/agent-workflow-test--with-plannotator (script &rest body)
+  "Run BODY with a fake Plannotator whose shell body is SCRIPT.
+The fake gets the real arguments, so `$6' is the result file.  BODY sees
+`task' (a task folder holding plan.org), `session', `shared' (the
+`--share-file' calls) and `messages'; `run' calls the command and waits."
+  (declare (indent 1) (debug t))
+  `(rsr/agent-workflow-test--with-db
+     (let* ((bin (make-temp-file "plannotator-test-" t))
+            (task (file-name-as-directory (make-temp-file "task-" t)))
+            (rsr/agent-workflow-plannotator (expand-file-name "plannotator" bin))
+            (session (list :agent-session-id "thread-a"))
+            shared messages)
+       (unwind-protect
+           (progn
+             (with-temp-file rsr/agent-workflow-plannotator
+               (insert "#!/bin/sh\n" ,script "\n"))
+             (set-file-modes rsr/agent-workflow-plannotator #o755)
+             (with-temp-file (expand-file-name "plan.org" task)
+               (insert "#+title: Plan\n#+status: DRAFT\n"))
+             (rsr/agent-sessions--register-folder session "plans" task)
+             (cl-letf (((symbol-function 'rsr/agent-workflow--parent-session)
+                        (lambda () (cons "term-a" session)))
+                       ((symbol-function 'completing-read)
+                        (lambda (_prompt collection &rest _) (car (all-completions "" collection))))
+                       ((symbol-function 'rsr/agent-sessions--share-file)
+                        (lambda (s path label) (push (list s path label) shared)))
+                       ((symbol-function 'rsr/agent-sessions--refresh-if-visible) #'ignore)
+                       ((symbol-function 'message)
+                        (lambda (fmt &rest args) (push (apply #'format fmt args) messages))))
+               (cl-flet ((run ()
+                           (let ((before (process-list)))
+                             (rsr/agent-workflow-annotate)
+                             (dolist (proc (seq-difference (process-list) before))
+                               (while (process-live-p proc)
+                                 (accept-process-output proc 0.1)))
+                             (accept-process-output nil 0.1))))
+                 ,@body)))
+         (delete-directory bin t)
+         (delete-directory task t)))))
+
+(defun rsr/agent-workflow-test--review-dirs (task)
+  "The human-review folders under TASK's artifacts."
+  (let ((artifacts (expand-file-name "artifacts" task)))
+    (and (file-directory-p artifacts)
+         (directory-files artifacts t "human-review"))))
+
+(ert-deftest rsr/agent-workflow-annotate-argv ()
+  (should (equal (rsr/agent-workflow--annotate-argv "/t/plan.org" "/t/r.json")
+                 '("annotate" "/t/plan.org" "--gate" "--json"
+                   "--result-file" "/t/r.json"))))
+
+(ert-deftest rsr/agent-workflow-annotate-feedback-is-ready-to-bring-in ()
+  (rsr/agent-workflow-test--with-plannotator
+      "printf '{\"decision\":\"annotated\",\"feedback\":\"Step 2 misses the timeout.\"}' > \"$6\""
+    (run)
+    (let* ((dir (car (rsr/agent-workflow-test--review-dirs task)))
+           (findings (with-temp-buffer
+                       (insert-file-contents (expand-file-name "findings.md" dir))
+                       (buffer-string))))
+      (should (string-match-p "Decision: annotated" findings))
+      (should (string-match-p "#\\+status: DRAFT" findings))
+      (should (string-match-p "Step 2 misses the timeout\\." findings))
+      (should (equal (length shared) 1))
+      (pcase-let ((`(,s ,path ,label) (car shared)))
+        (should (eq s session))
+        (should (equal path (expand-file-name "summary.md" dir)))
+        (should (equal label "human-review plan.org: ready to bring in")))
+      ;; `y' lists it like a finished child.
+      (cl-letf (((symbol-function 'rsr/agent-sessions--session-files)
+                 (lambda (_) (list (list :path (nth 1 (car shared))
+                                         :label (nth 2 (car shared)))))))
+        (should (rsr/agent-workflow--finished-children session))))))
+
+(ert-deftest rsr/agent-workflow-annotate-approval-is-recorded ()
+  (rsr/agent-workflow-test--with-plannotator
+      "printf '{\"decision\":\"approved\",\"feedback\":\"\"}' > \"$6\""
+    (run)
+    (let ((dir (car (rsr/agent-workflow-test--review-dirs task))))
+      (should (string-match-p "approved, no feedback"
+                              (with-temp-buffer
+                                (insert-file-contents (expand-file-name "summary.md" dir))
+                                (buffer-string))))
+      (should (equal (length shared) 1)))))
+
+(ert-deftest rsr/agent-workflow-annotate-dismissal-leaves-nothing ()
+  (dolist (script '("printf '{\"decision\":\"dismissed\",\"feedback\":\"\"}' > \"$6\""
+                    "exit 0"))
+    (rsr/agent-workflow-test--with-plannotator script
+      (run)
+      (should-not (rsr/agent-workflow-test--review-dirs task))
+      (should-not shared)
+      (should (string-match-p "nothing saved" (car messages))))))
+
+(ert-deftest rsr/agent-workflow-annotate-failure-is-reported ()
+  (rsr/agent-workflow-test--with-plannotator
+      "echo 'File not found' >&2; exit 2"
+    (run)
+    (should-not (rsr/agent-workflow-test--review-dirs task))
+    (should-not shared)
+    (should (equal (car messages) "Plannotator failed: File not found"))))
+
+(ert-deftest rsr/agent-workflow-annotate-does-not-block-emacs ()
+  "The review waits on the user, so the command must return while it runs."
+  (rsr/agent-workflow-test--with-plannotator
+      "while [ ! -e \"$6.go\" ]; do sleep 0.1; done; printf '{\"decision\":\"dismissed\"}' > \"$6\""
+    (let ((before (process-list)))
+      (rsr/agent-workflow-annotate)
+      (let ((proc (car (seq-difference (process-list) before)))
+            (dir (car (rsr/agent-workflow-test--review-dirs task))))
+        (should (process-live-p proc))
+        (write-region "" nil (expand-file-name "decision.json.go" dir) nil 'silent)
+        (while (process-live-p proc) (accept-process-output proc 0.1))
+        (accept-process-output nil 0.1)))))
+
+(ert-deftest rsr/agent-workflow-annotate-asks-for-a-task-when-none-is-registered ()
+  (rsr/agent-workflow-test--with-plannotator "exit 0"
+    (setq session (list :agent-session-id "thread-unregistered"))
+    (cl-letf (((symbol-function 'rsr/agent-workflow--read-task) (lambda (&rest _) task)))
+      (run))
+    (should (equal (rsr/agent-sessions--session-folder-paths session "plans")
+                   (list task)))))
+
+(ert-deftest rsr/agent-workflow-a-is-bound ()
+  (should (eq (lookup-key rsr/agent-sessions-mode-map (kbd "a"))
+              #'rsr/agent-workflow-annotate))
+  (should (eq (lookup-key rsr/agent-workflow-map (kbd "a"))
+              #'rsr/agent-workflow-annotate)))
+
 (provide 'agent-workflow-test)
 ;;; agent-workflow-test.el ends here

@@ -898,6 +898,18 @@ to write. The code picker offers projectile's known projects, magit's
 registered code folder, and both pickers end with a typed path. There is no
 unassign key; nobody has needed one yet.
 
+**`a` is the user's own review, and it arrives the way a child's does.** It
+opens a document of the row's Plans folder in Plannotator's browser view by
+running the CLI itself, not through the agent, because the sessions are
+Claude, Pi or anything else interchangeably and only Pi has an in-session
+command. The decision is written to `artifacts/<date>-human-review/` and its
+summary shared as "ready to bring in", so `y` hands it over when the user
+chooses, beside the agent review's findings. Pasting it into the session on
+submit was rejected: it could land in a half-typed draft and would start a
+turn before the user meant to. A dismissal or failure removes the folder. The
+process is asynchronous and left queryable on exit, since quitting Emacs
+ends the review.
+
 ## Editing
 
 **A schema addition needs the load-time re-migration to be reachable.**
