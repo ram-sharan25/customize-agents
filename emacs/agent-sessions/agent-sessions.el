@@ -1232,6 +1232,23 @@ cleanup logs the close.  Asks tmux nothing when there are no proxies."
        :background "#4a1010" :foreground "#ff8f8f"))
   "Face for a session row in the error state (spans the full row).")
 
+(defface rsr/agent-session-on-screen
+  '((((background dark)) :background "#1f2f3a" :extend t)
+    (t :background "#e3edf3" :extend t))
+  "Background of the row whose terminal is on screen.
+Left off a row that needs attention or has failed, whose own background says
+more.")
+
+(defface rsr/agent-session-on-screen-glyph
+  '((t :inherit font-lock-function-name-face :weight bold))
+  "Face for `rsr/agent-sessions-on-screen-glyph'.")
+
+(defcustom rsr/agent-sessions-on-screen-glyph "▸"
+  "Drawn at the left edge of the row whose terminal is on screen.
+It takes the place of the row's first indent column, so nothing shifts."
+  :type 'string
+  :group 'rsr/agent-sessions)
+
 (defun rsr/agent-sessions--face-for (status)
   (pcase status
     ('needs-attention 'rsr/agent-session-needs-attention)
@@ -1245,6 +1262,12 @@ status a row *shows* is not the one in the registry — `rsr/agent-sessions--
 unread-status' overlays the `u' mark onto a copy at display time — so a
 navigation command that re-derives status from the registry silently skips
 every manually marked row.  Record what was drawn; don't derive it twice.")
+
+(defvar-local rsr/agent-sessions--row-buffers nil
+  "Alist of (LINE-POS . BUFFER) for the session rows as last rendered.
+Filled beside `rsr/agent-sessions--row-status', for the same reason: the
+on-screen mark (`rsr/agent-sessions--mark-on-screen') moves between renders
+and must find the rows that were drawn, not look them up again.")
 
 (defun rsr/agent-orchestration--messages (id)
   (gethash id rsr/agent-orchestration--mail))
@@ -1516,6 +1539,8 @@ indentation conveys the relationship."
                        (rsr/agent-sessions--folder-for-session session)))))
     ;; Record what this row *shows*, for `N'/`P' (see the variable's docstring).
     (push (cons (line-beginning-position) status) rsr/agent-sessions--row-status)
+    (push (cons (line-beginning-position) (plist-get session :buffer))
+          rsr/agent-sessions--row-buffers)
     (magit-insert-section (rsr/agent-session-row id)
       ;; A heading rather than a plain insert so the row's note becomes its
       ;; collapsible body; with no note the body is empty and magit shows no
@@ -4137,7 +4162,8 @@ a git repo (a tmux group has no worktree to name)."
                    (current-column)))
          (wstart (and win (window-start win))))
     (erase-buffer)
-    (setq rsr/agent-sessions--row-status nil)
+    (setq rsr/agent-sessions--row-status nil
+          rsr/agent-sessions--row-buffers nil)
     (magit-insert-section (rsr/agent-sessions-root)
       (let ((entries (rsr/agent-sessions--live-entries)))
         (setq rsr/agent-sessions--state-width
@@ -4192,7 +4218,8 @@ a git repo (a tmux group has no worktree to name)."
     (when win
       (set-window-point win (point))
       (when wstart
-        (set-window-start win (min wstart (point-max)) t)))))
+        (set-window-start win (min wstart (point-max)) t)))
+    (rsr/agent-sessions--mark-on-screen (current-buffer))))
 
 (defvar-local rsr/agent-sessions--overview-level nil
   "Current Shift+TAB level, from 0 (repos only) to the deepest open level.")
@@ -4314,6 +4341,74 @@ invalidates the worktree cache and re-reads each session's repo/branch info."
       (with-current-buffer buf
         (rsr/agent-sessions--refresh)))))
 
+(defun rsr/agent-sessions--on-screen-buffers ()
+  "Buffers in a window of a visible frame, with the proxies tmux terminals show.
+A tmux agent's row is keyed by its proxy, which is never itself on screen:
+*tmux: S* standing for whichever window its client shows."
+  (let ((shown (delete-dups (mapcar #'window-buffer
+                                    (window-list-1 nil 'nomini 'visible)))))
+    (append shown (rsr/agent-tmux-shown-proxies shown))))
+
+(defun rsr/agent-sessions--mark-on-screen (dashboard)
+  "Mark DASHBOARD's rows whose terminals are on screen, unmarking the rest.
+Overlays over the rows the last render drew (`rsr/agent-sessions--row-buffers'),
+so the mark moves without drawing the dashboard again.  The glyph replaces
+the row's first indent column; the background covers the row's whole section,
+its files, links and note included, and is left off a row whose status has a
+background of its own."
+  (with-current-buffer dashboard
+    (remove-overlays (point-min) (point-max) 'rsr/agent-sessions-on-screen t)
+    (when-let ((shown (and rsr/agent-sessions--row-buffers
+                           (rsr/agent-sessions--on-screen-buffers))))
+      (pcase-dolist (`(,pos . ,buf) rsr/agent-sessions--row-buffers)
+        (when (and buf (memq buf shown) (eq (char-after pos) ?\s))
+          (let ((glyph (make-overlay pos (1+ pos))))
+            (overlay-put glyph 'rsr/agent-sessions-on-screen t)
+            (overlay-put glyph 'display
+                         (propertize rsr/agent-sessions-on-screen-glyph
+                                     'face 'rsr/agent-session-on-screen-glyph)))
+          (when (eq (rsr/agent-sessions--face-for
+                     (cdr (assq pos rsr/agent-sessions--row-status)))
+                    'default)
+            ;; The whole section: its files, links and note belong to it.
+            (let ((row (make-overlay pos (if-let ((section (get-text-property
+                                                            pos 'magit-section)))
+                                             (oref section end)
+                                           (save-excursion
+                                             (goto-char pos)
+                                             (min (1+ (line-end-position))
+                                                  (point-max)))))))
+              (overlay-put row 'rsr/agent-sessions-on-screen t)
+              (overlay-put row 'face 'rsr/agent-session-on-screen))))))))
+
+(defvar rsr/agent-sessions--on-screen-timer nil
+  "The pending `rsr/agent-sessions--mark-on-screen-soon' update, if any.")
+
+(defun rsr/agent-sessions--mark-on-screen-soon (&rest _)
+  "Move the dashboard's on-screen mark shortly, once for a burst of changes.
+For `window-buffer-change-functions', which runs at every buffer switch in
+any window, and `window-configuration-change-hook', the one that also runs
+when a window is closed: nothing is scheduled unless the dashboard is on screen, and the
+update reads the windows when it runs, so one serves the whole burst.  A
+window change is when a tmux client moves, so the update asks tmux afresh
+rather than trusting the snapshot renders share."
+  (let ((dashboard (get-buffer rsr/agent-sessions-buffer-name)))
+    (when (and dashboard
+               (not rsr/agent-sessions--on-screen-timer)
+               (get-buffer-window dashboard 'visible))
+      ;; DASHBOARD goes to the timer as an argument: this file is dynamically
+      ;; bound, so a lambda would no longer see it when the timer fires.
+      (setq rsr/agent-sessions--on-screen-timer
+            (run-at-time 0.1 nil #'rsr/agent-sessions--mark-on-screen-now
+                         dashboard)))))
+
+(defun rsr/agent-sessions--mark-on-screen-now (dashboard)
+  "The update `rsr/agent-sessions--mark-on-screen-soon' schedules."
+  (setq rsr/agent-sessions--on-screen-timer nil)
+  (rsr/agent-tmux-forget-clients)
+  (when (buffer-live-p dashboard)
+    (rsr/agent-sessions--mark-on-screen dashboard)))
+
 (defun rsr/agent-sessions--session-at-point ()
   (let ((section (magit-current-section)))
     (and section (eq (oref section type) 'rsr/agent-session-row)
@@ -4427,14 +4522,18 @@ external links open in the browser."
 (defun rsr/agent-sessions--show-terminal (buf &optional display)
   "Select session terminal BUF, or with DISPLAY only show it in another window.
 A tmux proxy has no screen of its own: show its session's buffer with its
-window selected, and count that as looking at the session."
-  (if (rsr/agent-tmux-proxy-p buf)
-      (progn
-        (rsr/agent-tmux-show-proxy buf display)
-        (rsr/agent-session--clear-attention buf))
-    (if display
-        (display-buffer buf rsr/agent-tmux-other-window-action)
-      (rsr/agent-sessions--pop-to-other-window buf))))
+window selected, and count that as looking at the session.  Switching the
+window of a *tmux: S* already on screen changes no Emacs window, so the
+on-screen mark is moved here as well."
+  (prog1
+      (if (rsr/agent-tmux-proxy-p buf)
+          (progn
+            (rsr/agent-tmux-show-proxy buf display)
+            (rsr/agent-session--clear-attention buf))
+        (if display
+            (display-buffer buf rsr/agent-tmux-other-window-action)
+          (rsr/agent-sessions--pop-to-other-window buf)))
+    (rsr/agent-sessions--mark-on-screen-soon)))
 
 (defun rsr/agent-sessions--pop-to-other-window (buf)
   "Select BUF in another window, reusing one rather than splitting.
@@ -7780,6 +7879,10 @@ the tmux reattach at startup, and starting the Emacs server
       (advice-add 'ghostel--set-title :before #'rsr/agent-sessions--capture-title)))
   ;; Clear a session's needs-attention highlight once the user focuses it.
   (add-hook 'buffer-list-update-hook #'rsr/agent-session--clear-attention-on-focus)
+  ;; Mark the dashboard row whose terminal is on screen beside it.  Closing a
+  ;; window runs only the second hook.
+  (add-hook 'window-buffer-change-functions #'rsr/agent-sessions--mark-on-screen-soon)
+  (add-hook 'window-configuration-change-hook #'rsr/agent-sessions--mark-on-screen-soon)
   ;; Record that sessions still running at exit were *not* closed by the user.
   ;; This is the half of the close-detection scheme that runs when Emacs goes
   ;; away in an orderly fashion; `kill-buffer-hook' covers the other half, and

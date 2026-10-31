@@ -332,18 +332,22 @@ For `window-buffer-change-functions', which runs during redisplay."
   (rsr/agent-tmux--output "display-message" "-p" "-t" (concat "=" session ":")
                           "#{window_id}"))
 
+(defun rsr/agent-tmux--terminal-pid (buffer)
+  "The pid of the tmux client ghostel BUFFER runs, or nil."
+  (and (buffer-live-p buffer)
+       (with-current-buffer buffer
+         (or (and (boundp 'ghostel--pid) ghostel--pid)
+             (and (boundp 'ghostel--process)
+                  (process-live-p ghostel--process)
+                  (process-id ghostel--process))))))
+
 (defun rsr/agent-tmux-client (buffer)
   "The tty of the tmux client running in ghostel BUFFER, or nil.
 Matched by pid: ghostel runs the client directly, so its child is the client.
 A client can be moved to another session from inside it (prefix s, prefix
 \=(), after which *tmux: S* no longer shows S; showing a window there must
 therefore address the client, not the session."
-  (when-let* ((pid (and (buffer-live-p buffer)
-                        (with-current-buffer buffer
-                          (or (and (boundp 'ghostel--pid) ghostel--pid)
-                              (and (boundp 'ghostel--process)
-                                   (process-live-p ghostel--process)
-                                   (process-id ghostel--process))))))
+  (when-let* ((pid (rsr/agent-tmux--terminal-pid buffer))
               (out (rsr/agent-tmux--output "list-clients" "-F"
                                            "#{client_pid}\t#{client_tty}")))
     (cl-loop for line in (split-string out "\n" t)
@@ -664,6 +668,55 @@ at *tmux: S* as looking at the agent in S's current window."
                                          active)))
                            (buffer-list)))
             buffer)))))
+
+(defvar rsr/agent-tmux--clients nil
+  "Cache: (TIME . HASH) mapping a client's pid, as a string, to its window.")
+
+(defun rsr/agent-tmux--clients ()
+  "Hash of client pid → the window it shows, reused for `rsr/agent-tmux--panes-ttl'.
+A tmux call costs ~14ms, and the dashboard renders on every hook event."
+  (if (and rsr/agent-tmux--clients
+           (< (- (float-time) (car rsr/agent-tmux--clients)) rsr/agent-tmux--panes-ttl))
+      (cdr rsr/agent-tmux--clients)
+    (let ((table (make-hash-table :test 'equal)))
+      (dolist (line (split-string (or (rsr/agent-tmux--output
+                                       "list-clients" "-F"
+                                       "#{client_pid}\t#{window_id}")
+                                      "")
+                                  "\n" t))
+        (pcase (split-string line "\t")
+          (`(,pid ,window) (puthash pid window table))))
+      (setq rsr/agent-tmux--clients (cons (float-time) table))
+      table)))
+
+(defun rsr/agent-tmux-forget-clients ()
+  "Drop the client snapshot, so the next read asks tmux again."
+  (setq rsr/agent-tmux--clients nil))
+
+(defun rsr/agent-tmux-shown-proxies (buffers)
+  "The proxies of the windows that the tmux terminals among BUFFERS show.
+One `list-clients' answers for every terminal, and nothing is asked when
+BUFFERS holds none.  A terminal whose client is not listed (still attaching)
+counts as showing its session's current window, as in
+`rsr/agent-tmux--terminal-showing'."
+  (when-let ((terminals (seq-filter
+                         (lambda (b)
+                           (and (buffer-local-value 'rsr/agent-tmux-session b)
+                                (not (rsr/agent-tmux-proxy-p b))))
+                         buffers)))
+    (let ((clients (rsr/agent-tmux--clients))
+          (proxies (make-hash-table :test 'equal)))
+      (dolist (p (rsr/agent-tmux-proxies))
+        (puthash (buffer-local-value 'rsr/agent-tmux-window p) p proxies))
+      (delete-dups
+       (delq nil (mapcar
+                  (lambda (term)
+                    (let ((pid (rsr/agent-tmux--terminal-pid term)))
+                      (gethash (or (and pid (gethash (number-to-string pid) clients))
+                                   (rsr/agent-tmux-active-window
+                                    (buffer-local-value 'rsr/agent-tmux-session term)))
+                               proxies)))
+                  terminals))))))
 
 (defvar rsr/agent-tmux--active-cache nil
   "(TIME BUFFER . WINDOW): the last active-window answer, reused briefly.")

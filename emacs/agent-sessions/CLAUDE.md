@@ -77,6 +77,24 @@ name). Which window a terminal shows comes from `list-clients`:
 `display-message -c TTY` expands in the most recently used session, so it
 named the wrong window as soon as two clients were attached.
 
+**The row on screen is marked by overlays, not by a render.** The row whose
+terminal is in a window gets `▸` in its first indent column and a faint
+background (left off an attention or error row, whose own background says
+more). It is drawn over the rows the last render recorded
+(`--row-buffers`, beside `--row-status`), so moving it when a window changes
+costs ~0.01ms instead of a full render. `window-buffer-change-functions` fires
+at every buffer switch, and `window-configuration-change-hook` is added
+because only it fires when a window closes; either schedules at most one
+update, and none while the dashboard is off screen. The timer gets the
+dashboard as an argument, not through a lambda: this file is dynamically
+bound, and the first version's lambda failed with `void-variable` on every
+update, which batch tests missed by running the timer function in place. A tmux terminal stands for the proxy of the
+window its client shows, read with `list-clients` — ~14ms per call (measured),
+so renders share a 1s snapshot like `list-panes`, and an update after a window
+change or `show-terminal` asks afresh. One gap: switching windows from inside
+tmux (prefix n) changes no Emacs window, so the mark follows only at the next
+render.
+
 **Opening never splits behind your back.** `rsr/agent-tmux-other-window-action`
 replaces the window beside the dashboard. Called from an ordinary window with
 no other beside it (a notification click, an Org link, a new terminal), its

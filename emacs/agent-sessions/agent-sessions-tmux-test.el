@@ -21,6 +21,7 @@ proxy BODY leaves behind."
           (rsr/agent-sessions-db-file db-file)
           (rsr/agent-sessions--db nil)
           (rsr/agent-tmux--panes nil)
+          (rsr/agent-tmux--clients nil)
           (rsr/agent-tmux--active-cache nil)
           (responder ,responder))
      (cl-letf (((symbol-function 'rsr/agent-tmux--call)
@@ -356,6 +357,85 @@ inside tmux; selecting the window in S alone would leave it there."
       (should (equal (rsr/agent-tmux-client-window term) "@7")))
     (rsr/agent-tmux-test--with-terminal " *tmux: b*" 111
       (should (equal (rsr/agent-tmux-client-window term) "@3")))))
+
+(ert-deftest rsr/agent-tmux-shown-proxies-reads-clients-once ()
+  "Each tmux terminal maps to the proxy of the window its client shows.
+One `list-clients' answers for every terminal; a terminal whose client is not
+listed yet counts as showing its session's current window."
+  (rsr/agent-tmux-test--with-fake
+      (lambda (args)
+        (pcase (car args)
+          ("list-clients" "4242\t@7\n111\t@3\n")
+          ("display-message" "@8")
+          (_ (rsr/agent-tmux-test--standard args))))
+    (let ((proxy (rsr/agent-tmux-test--open-proxy))
+          (plain (generate-new-buffer " *plain*")))
+      (unwind-protect
+          (rsr/agent-tmux-test--with-terminal " *tmux: a*" 4242
+            (setq rsr/agent-tmux-test--calls nil)
+            (should (equal (rsr/agent-tmux-shown-proxies (list term plain proxy))
+                           (list proxy)))
+            (should (= 1 (length (rsr/agent-tmux-test--called "list-clients"))))
+            ;; A client not listed: the session's current window, @8, has no proxy.
+            (with-current-buffer term (setq-local ghostel--pid 999))
+            (should-not (rsr/agent-tmux-shown-proxies (list term)))
+            (should (rsr/agent-tmux-test--called "display-message")))
+        (kill-buffer plain)))))
+
+(ert-deftest rsr/agent-tmux-shown-proxies-covers-every-terminal ()
+  "A session's terminal and an `o' view of it each name their own agent."
+  (let ((window "@7"))
+    (rsr/agent-tmux-test--with-fake
+        (lambda (args)
+          (pcase (car args)
+            ("new-window" (concat window "\n"))
+            ("list-panes" "@7\t4242\tA\n@9\t4243\tB\n")
+            ("list-clients" "4242\t@7\n5555\t@9\n")
+            (_ (rsr/agent-tmux-test--standard args))))
+      (let* ((first (rsr/agent-tmux-test--open-proxy))
+             (second (progn (setq window "@9") (rsr/agent-tmux-test--open-proxy))))
+        (rsr/agent-tmux-test--with-terminal " *tmux: test*" 4242
+          (let ((view (get-buffer-create " *tmux: test @9*")))
+            (unwind-protect
+                (progn
+                  (with-current-buffer view
+                    (setq-local ghostel--pid 5555)
+                    (setq-local rsr/agent-tmux-session "test~view-9"))
+                  (should (equal (sort (rsr/agent-tmux-shown-proxies (list term view))
+                                       (lambda (x y) (string< (buffer-name x)
+                                                              (buffer-name y))))
+                                 (sort (list first second)
+                                       (lambda (x y) (string< (buffer-name x)
+                                                              (buffer-name y))))))
+                  (should (= 1 (length (rsr/agent-tmux-test--called "list-clients")))))
+              (kill-buffer view))))))))
+
+(ert-deftest rsr/agent-tmux-shown-proxies-reuses-clients-briefly ()
+  "Renders within a second share one `list-clients'; forgetting asks again."
+  (rsr/agent-tmux-test--with-fake
+      (lambda (args)
+        (pcase (car args)
+          ("list-clients" "4242\t@7\n")
+          (_ (rsr/agent-tmux-test--standard args))))
+    (let ((rsr/agent-tmux--clients nil)
+          (proxy (rsr/agent-tmux-test--open-proxy)))
+      (rsr/agent-tmux-test--with-terminal " *tmux: a*" 4242
+        (setq rsr/agent-tmux-test--calls nil)
+        (dotimes (_ 3)
+          (should (equal (rsr/agent-tmux-shown-proxies (list term)) (list proxy))))
+        (should (= 1 (length (rsr/agent-tmux-test--called "list-clients"))))
+        (rsr/agent-tmux-forget-clients)
+        (rsr/agent-tmux-shown-proxies (list term))
+        (should (= 2 (length (rsr/agent-tmux-test--called "list-clients"))))))))
+
+(ert-deftest rsr/agent-tmux-shown-proxies-asks-nothing-without-terminals ()
+  (rsr/agent-tmux-test--with-fake #'rsr/agent-tmux-test--standard
+    (let ((plain (generate-new-buffer " *plain*")))
+      (unwind-protect
+          (progn
+            (should-not (rsr/agent-tmux-shown-proxies (list plain)))
+            (should-not rsr/agent-tmux-test--calls))
+        (kill-buffer plain)))))
 
 (ert-deftest rsr/agent-tmux-views-are-not-sessions-to-offer ()
   (should (equal (rsr/agent-tmux-view-session "app" "@12") "app~view-12"))

@@ -1908,5 +1908,168 @@ Emacs 29 names the prompt builder `project--keymap-prompt'; 30 renamed it
                                                  (rsr/agent-sessions--icon 'repo)))
                          :family)))))
 
+;;; Which agent is on screen beside the dashboard
+
+(defmacro rsr/agent-sessions-test--with-on-screen (&rest body)
+  "Run BODY with `dashboard' and terminals `a' and `b', each a row of one repo.
+The dashboard is in the selected window with one window beside it, which
+shows nothing of the dashboard's; BODY points it at a terminal itself."
+  (declare (indent 0) (debug t))
+  `(rsr/agent-sessions-test--with-temp-db
+     (let* ((root (make-temp-file "on-screen-repo-" t))
+            (a (generate-new-buffer " *on-screen-a*"))
+            (b (generate-new-buffer " *on-screen-b*"))
+            (other (generate-new-buffer " *on-screen-other*"))
+            (dashboard (generate-new-buffer " *on-screen-dashboard*"))
+            (rsr/agent-sessions-buffer-name (buffer-name dashboard))
+            (rsr/agent-sessions--folders-loaded-p nil)
+            (rsr/agent-sessions--folders-cache-version nil)
+            (rsr/agent-sessions--folders nil)
+            (rsr/agent-sessions--folder-assignments nil)
+            (rsr/agent-sessions--order nil)
+            (rsr/agent-sessions-icons nil)
+            (rsr/agent-sessions--states nil)
+            (rsr/agent-sessions--notes nil)
+            (rsr/agent-sessions--on-screen-timer nil)
+            (status-a 'stopped)
+            (entry (lambda (id buf status)
+                     (list :id id :title id
+                           :session (list :buffer buf :agent-session-id id
+                                          :agent-type "claude" :status status
+                                          :repo "repo" :repo-root root
+                                          :worktree "repo" :worktree-name "repo"
+                                          :branch "main" :worktree-path root)))))
+       (unwind-protect
+           (save-window-excursion
+             (delete-other-windows)
+             (switch-to-buffer dashboard)
+             (set-window-buffer (split-window-right) other)
+             (with-current-buffer dashboard (rsr/agent-sessions-mode))
+             (cl-letf (((symbol-function 'rsr/agent-sessions--live-entries)
+                        (lambda () (list (funcall entry "alpha" a status-a)
+                                         (funcall entry "beta" b 'stopped)))))
+               ,@body))
+         (dolist (buf (list a b other dashboard)) (kill-buffer buf))
+         (delete-directory root t)))))
+
+(defun rsr/agent-sessions-test--row-marks (dashboard title)
+  "The on-screen overlays on the row titled TITLE in DASHBOARD."
+  (with-current-buffer dashboard
+    (goto-char (point-min))
+    (re-search-forward (concat (regexp-quote title) "$"))
+    (seq-filter (lambda (o) (overlay-get o 'rsr/agent-sessions-on-screen))
+                (overlays-in (line-beginning-position) (line-end-position)))))
+
+(defun rsr/agent-sessions-test--marked-p (dashboard title)
+  "Non-nil when the row titled TITLE carries the on-screen glyph."
+  (seq-find (lambda (o) (equal (overlay-get o 'display)
+                               rsr/agent-sessions-on-screen-glyph))
+            (rsr/agent-sessions-test--row-marks dashboard title)))
+
+(defun rsr/agent-sessions-test--shaded-p (dashboard title)
+  "Non-nil when the row titled TITLE carries the on-screen background."
+  (seq-find (lambda (o) (eq (overlay-get o 'face) 'rsr/agent-session-on-screen))
+            (rsr/agent-sessions-test--row-marks dashboard title)))
+
+(ert-deftest rsr/agent-sessions-on-screen-row-is-marked ()
+  "The row whose terminal is in a window gets the glyph and the background."
+  (rsr/agent-sessions-test--with-on-screen
+    (set-window-buffer (next-window) a)
+    (with-current-buffer dashboard (rsr/agent-sessions--refresh))
+    (should (rsr/agent-sessions-test--marked-p dashboard "alpha"))
+    (should (rsr/agent-sessions-test--shaded-p dashboard "alpha"))
+    (should-not (rsr/agent-sessions-test--row-marks dashboard "beta"))))
+
+(ert-deftest rsr/agent-sessions-on-screen-shades-the-sessions-attachments ()
+  "The background covers what hangs under the row, not only its heading line.
+The glyph stays on the heading alone."
+  (rsr/agent-sessions-test--with-on-screen
+    (setq rsr/agent-sessions--notes (make-hash-table :test 'equal))
+    (puthash '("session" "alpha") "remember this" rsr/agent-sessions--notes)
+    (puthash '("session" "beta") "and this" rsr/agent-sessions--notes)
+    (set-window-buffer (next-window) a)
+    (with-current-buffer dashboard (rsr/agent-sessions--refresh))
+    (should (rsr/agent-sessions-test--shaded-p dashboard "remember this"))
+    (should-not (rsr/agent-sessions-test--marked-p dashboard "remember this"))
+    (should-not (rsr/agent-sessions-test--row-marks dashboard "and this"))))
+
+(ert-deftest rsr/agent-sessions-on-screen-marks-every-split ()
+  "Two terminals in splits beside the dashboard both mark their rows."
+  (rsr/agent-sessions-test--with-on-screen
+    (let ((beside (next-window)))
+      (set-window-buffer beside a)
+      (set-window-buffer (split-window beside nil 'below) b))
+    (with-current-buffer dashboard (rsr/agent-sessions--refresh))
+    (should (rsr/agent-sessions-test--marked-p dashboard "alpha"))
+    (should (rsr/agent-sessions-test--marked-p dashboard "beta"))
+    (should (rsr/agent-sessions-test--shaded-p dashboard "beta"))))
+
+(ert-deftest rsr/agent-sessions-on-screen-mark-keeps-attention-background ()
+  "A row that needs attention keeps its own background; only the glyph is added."
+  (rsr/agent-sessions-test--with-on-screen
+    (setq status-a 'needs-attention)
+    (set-window-buffer (next-window) a)
+    (with-current-buffer dashboard (rsr/agent-sessions--refresh))
+    (should (rsr/agent-sessions-test--marked-p dashboard "alpha"))
+    (should-not (rsr/agent-sessions-test--shaded-p dashboard "alpha"))))
+
+(ert-deftest rsr/agent-sessions-on-screen-mark-moves-without-render ()
+  "Showing another terminal moves the mark; the rows are not drawn again."
+  (rsr/agent-sessions-test--with-on-screen
+    (set-window-buffer (next-window) a)
+    (with-current-buffer dashboard (rsr/agent-sessions--refresh))
+    (set-window-buffer (next-window) b)
+    (cl-letf (((symbol-function 'rsr/agent-sessions--refresh)
+               (lambda () (error "Re-rendered"))))
+      (rsr/agent-sessions--mark-on-screen dashboard))
+    (should-not (rsr/agent-sessions-test--row-marks dashboard "alpha"))
+    (should (rsr/agent-sessions-test--marked-p dashboard "beta"))
+    ;; Nothing beside the dashboard: no row is marked.
+    (set-window-buffer (next-window) other)
+    (rsr/agent-sessions--mark-on-screen dashboard)
+    (should-not (rsr/agent-sessions-test--row-marks dashboard "beta"))))
+
+(ert-deftest rsr/agent-sessions-on-screen-update-is-debounced ()
+  "A burst of window changes schedules one update, and none without a dashboard."
+  (rsr/agent-sessions-test--with-on-screen
+    (let ((scheduled 0))
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (&rest _) (cl-incf scheduled) (timer-create))))
+        (dotimes (_ 3) (rsr/agent-sessions--mark-on-screen-soon))
+        (should (= scheduled 1))
+        (setq rsr/agent-sessions--on-screen-timer nil)
+        (set-window-buffer (selected-window) other)
+        (rsr/agent-sessions--mark-on-screen-soon)
+        (should (= scheduled 1))))))
+
+(ert-deftest rsr/agent-sessions-on-screen-update-runs-from-the-timer ()
+  "The scheduled update still knows its dashboard when the timer fires.
+agent-sessions.el is dynamically bound, so a lambda closing over a `let'
+variable loses it once the scheduling function returns."
+  (rsr/agent-sessions-test--with-on-screen
+    (set-window-buffer (next-window) a)
+    (with-current-buffer dashboard (rsr/agent-sessions--refresh))
+    (set-window-buffer (next-window) b)
+    (let (pending)
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (_time _repeat fn &rest args)
+                   (setq pending (cons fn args))
+                   (timer-create))))
+        (rsr/agent-sessions--mark-on-screen-soon))
+      (apply (car pending) (cdr pending)))
+    (should (rsr/agent-sessions-test--marked-p dashboard "beta"))
+    (should-not rsr/agent-sessions--on-screen-timer)))
+
+(ert-deftest rsr/agent-sessions-on-screen-update-reads-clients-afresh ()
+  "A window change is when a client moves, so the update asks tmux again."
+  (rsr/agent-sessions-test--with-on-screen
+    (let ((forgot nil))
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (_time _repeat fn &rest args) (apply fn args) (timer-create)))
+                ((symbol-function 'rsr/agent-tmux-forget-clients)
+                 (lambda () (setq forgot t))))
+        (rsr/agent-sessions--mark-on-screen-soon)
+        (should forgot)))))
+
 (provide 'agent-sessions-test)
 ;;; agent-sessions-test.el ends here
