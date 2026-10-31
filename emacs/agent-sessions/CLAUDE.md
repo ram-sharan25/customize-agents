@@ -241,6 +241,17 @@ TUI, which is why the SessionStart mapping exists at all. Demotion is
 display-time only, on a copy, exactly like the unread mark — the registry
 stays the hook's record.
 
+The opposite hole: a `PermissionRequest` (a tool approval, or Claude's
+question picker) sets needs-attention mid-turn, looking at it turns that
+`stopped`, and once answered the agent works on with only tool events, which
+change nothing, so the row read `○` for the rest of the turn. So the session
+records `:turn-open` (opened by `UserPromptSubmit`, closed by `Stop`,
+`StopFailure`, `SessionEnd`, `SessionStart`), and a `PostToolUse` inside an
+open turn puts `running` back. That keeps the straggler rule: a late
+`PostToolUse` after `Stop` finds the turn closed. `PreToolUse` is left out on
+purpose, since it races the `PermissionRequest` of the same tool and would clear
+the attention before it was seen.
+
 **Notifications fire on the transition into attention, once.** A session that
 sits waiting must not re-announce on every subsequent event. If you add states,
 preserve "edge-triggered, not level-triggered."

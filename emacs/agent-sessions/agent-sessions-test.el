@@ -160,6 +160,68 @@ terminal's registry entry afterwards."
     (should (equal (plist-get session :agent-type) "pi"))
     (should (equal (plist-get session :agent-session-id) "pi-sid"))))
 
+(defun rsr/agent-hook-test--statuses (events &optional seen-after)
+  "Feed claude EVENTS to one terminal; return the status after each.
+After the event named SEEN-AFTER, the user looks at the terminal."
+  (rsr/agent-sessions-test--with-temp-db
+    (let* ((directory (make-temp-file "agent-hook-turn-" t))
+           (term (generate-new-buffer " *agent-hook-turn*"))
+           (rsr/agent-session-id->buffer (make-hash-table :test 'equal))
+           (rsr/agent-sessions (make-hash-table :test 'equal))
+           (rsr/agent-sessions--last-focused-buffer nil)
+           (rsr/agent-session-notify-on-attention nil)
+           statuses)
+      (unwind-protect
+          (progn
+            (with-current-buffer term
+              (setq-local rsr/agent-session-id "term")
+              (setq default-directory (file-name-as-directory directory)))
+            (puthash "term" term rsr/agent-session-id->buffer)
+            (cl-letf (((symbol-function 'rsr/agent-sessions--foreground-command)
+                       (lambda (_) "claude"))
+                      ((symbol-function 'rsr/agent-session--repo-info)
+                       (lambda (_) (list :repo "repo" :repo-root directory
+                                         :worktree-path directory)))
+                      ((symbol-function 'rsr/agent-sessions--detect-parent) #'ignore)
+                      ((symbol-function 'rsr/agent-sessions--log-update) #'ignore)
+                      ((symbol-function 'rsr/agent-orchestration--hydrate) #'ignore)
+                      ((symbol-function 'rsr/agent-orchestration-deliver) #'ignore)
+                      ((symbol-function 'rsr/agent-sessions--refresh-if-visible)
+                       #'ignore))
+              (dolist (event events)
+                (let ((payload-file (make-temp-file "agent-hook-payload-")))
+                  (with-temp-file payload-file
+                    (insert (json-serialize
+                             (let ((payload (make-hash-table :test 'equal)))
+                               (puthash "hook_event_name" event payload)
+                               (puthash "session_id" "claude-sid" payload)
+                               (puthash "cwd" directory payload)
+                               payload))))
+                  (rsr/agent-hook-notify "term" "claude" payload-file))
+                (when (equal event seen-after)
+                  (rsr/agent-session--clear-attention term))
+                (push (plist-get (gethash "term" rsr/agent-sessions) :status)
+                      statuses)))
+            (nreverse statuses))
+        (kill-buffer term)
+        (delete-directory directory t)))))
+
+(ert-deftest rsr/agent-hook-answered-permission-resumes-running ()
+  "A tool finishing after an answered permission puts the row back to running.
+Looking at the waiting session turns it `stopped'; before this, the tool
+events that followed left it there for the rest of the turn."
+  (should (equal (rsr/agent-hook-test--statuses
+                  '("UserPromptSubmit" "PreToolUse" "PermissionRequest"
+                    "PostToolUse" "Stop")
+                  "PermissionRequest")
+                 '(running running stopped running needs-attention))))
+
+(ert-deftest rsr/agent-hook-straggler-tool-event-keeps-turn-ended ()
+  "A PostToolUse delivered after Stop must not bring back `running'."
+  (should (equal (rsr/agent-hook-test--statuses
+                  '("UserPromptSubmit" "Stop" "PostToolUse"))
+                 '(running needs-attention needs-attention))))
+
 (ert-deftest rsr/agent-sessions-share-file-prefers-durable-agent-id ()
   (let* ((source (make-temp-file "agent-share-routing-"))
          (target-buffer (generate-new-buffer " *agent-share-target*"))

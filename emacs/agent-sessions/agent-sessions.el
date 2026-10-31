@@ -702,7 +702,26 @@ to the terminal that actually owns the event."
                                   (rsr/agent-sessions--taken-over-p
                                    old agent-type buf))
                        old)))
+         ;; Whether a turn is in progress: opened by the prompt, closed by
+         ;; anything that ends one.  Only the status table's own events move
+         ;; it, so a straggler cannot reopen a turn that has ended.
+         (turn-open (pcase event-name
+                      ("UserPromptSubmit" t)
+                      ((or "Stop" "StopFailure" "SessionEnd" "SessionStart"
+                           "agent-turn-complete")
+                       nil)
+                      (_ (and existing (plist-get existing :turn-open)))))
          (status (or (rsr/agent-session--status-for agent-type event-name)
+                     ;; A tool finishing mid-turn means the agent is working
+                     ;; again: the permission or question that set
+                     ;; needs-attention (and looking at it, `stopped') was
+                     ;; answered.  Without this the row kept `○' for the rest
+                     ;; of the turn.  Not PreToolUse: it races the
+                     ;; PermissionRequest of the same tool and would clear the
+                     ;; attention before the user saw it.
+                     (and turn-open
+                          (member event-name '("PostToolUse" "PostToolUseFailure"))
+                          'running)
                      (and existing (plist-get existing :status))
                      'running))
          ;; The agent's *own* session id (a UUID), as opposed to our
@@ -748,6 +767,7 @@ to the terminal that actually owns the event."
                        :transcript-path transcript-path
                        :submitted-prompt submitted-prompt
                        :status status
+                       :turn-open turn-open
                        :last-event event-name
                        :updated-at (current-time)
                        :repo (plist-get info :repo)
