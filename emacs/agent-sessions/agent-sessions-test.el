@@ -275,21 +275,21 @@ terminal's registry entry afterwards."
         (rsr/agent-sessions--insert-session entry 1 t)
         (should (string-match-p "\\`    └ ○ " (buffer-string)))))))
 
-(ert-deftest rsr/agent-sessions-state-column-fits-shown-states ()
-  (with-temp-buffer
-    ;; No stage on screen: no blank column before the title.
-    (setq rsr/agent-sessions--state-width 0)
-    (should (equal (substring-no-properties
-                    (rsr/agent-sessions--row-text "P " nil "Title" 'default))
-                   "P Title"))
-    ;; Sized to the widest stage shown, so titles still line up.
-    (setq rsr/agent-sessions--state-width (1+ (length "PLANNING")))
-    (should (equal (substring-no-properties
-                    (rsr/agent-sessions--row-text "P " "PLANNING" "Title" 'default))
-                   "P PLANNING Title"))
-    (should (equal (substring-no-properties
-                    (rsr/agent-sessions--row-text "P " nil "Title" 'default))
-                   "P          Title"))))
+(ert-deftest rsr/agent-sessions-state-follows-the-row ()
+  "A stage goes last, so a row without one has no gap before its title."
+  (should (equal (substring-no-properties
+                  (rsr/agent-sessions--row-text "P Title claude" nil "\n" 'default))
+                 "P Title claude\n"))
+  (should (equal (substring-no-properties
+                  (rsr/agent-sessions--row-text "P Title claude" "PLANNING" "\n"
+                                                'default))
+                 "P Title claude  PLANNING\n")))
+
+(ert-deftest rsr/agent-sessions-row-title-drops-activity-glyph ()
+  (should (equal (rsr/agent-sessions--row-title "✳ Fix the view") "Fix the view"))
+  (should (equal (rsr/agent-sessions--row-title "⠐ Fix the view") "Fix the view"))
+  (should (equal (rsr/agent-sessions--row-title "Fix * this") "Fix * this"))
+  (should (equal (rsr/agent-sessions--row-title nil) "")))
 
 (ert-deftest rsr/agent-sessions-attachment-column-fits-names ()
   (cl-letf (((symbol-function 'rsr/agent-sessions--session-links)
@@ -427,8 +427,8 @@ checkout folder called `main' does not name the project."
                      "@card"))
       (should (equal (mapcar (lambda (e) (plist-get e :at-label))
                              (rsr/agent-sessions--label-entries entries))
-                     ;; A row in no folder has no heading, so it keeps its label.
-                     '(nil nil "@option-a" "@card"))))))
+                     ;; A row in no folder is compared with its repo heading.
+                     '(nil nil "@option-a" nil))))))
 
 (defmacro rsr/agent-sessions-test--with-git-repo (var &rest body)
   "Run BODY with VAR bound to a fresh git repo on branch `main'."
@@ -1895,7 +1895,7 @@ shows nothing of the dashboard's; BODY points it at a terminal itself."
   "The on-screen overlays on the row titled TITLE in DASHBOARD."
   (with-current-buffer dashboard
     (goto-char (point-min))
-    (re-search-forward (concat (regexp-quote title) "$"))
+    (re-search-forward (concat (regexp-quote title) "\\_>"))
     (seq-filter (lambda (o) (overlay-get o 'rsr/agent-sessions-on-screen))
                 (overlays-in (line-beginning-position) (line-end-position)))))
 

@@ -1295,18 +1295,6 @@ an agent reading its inbox must not fail because the database is busy."
   (let ((n (rsr/agent-orchestration--pending-count id)))
     (if (> n 0) (format "  ✉%d" n) "")))
 
-(defvar-local rsr/agent-sessions--state-width nil
-  "State column width for the current render, set by `rsr/agent-sessions--refresh'.
-Nil outside a render, where the column falls back to fit every listed state.")
-
-(defun rsr/agent-sessions--state-column-width ()
-  "Width of the state column: the widest state shown, plus a separating space.
-Sized to the states actually on screen, and zero when no row has one, so a
-narrow side window spends no blank columns before the titles.  Every row in a
-render shares the width, so stated and unstated titles still line up."
-  (or rsr/agent-sessions--state-width
-      (1+ (apply #'max 0 (mapcar #'length rsr/agent-sessions-states)))))
-
 (defun rsr/agent-sessions--session-worktree-name (session)
   "Return SESSION's worktree directory name, including older registry entries."
   (or (plist-get session :worktree-name)
@@ -1334,10 +1322,6 @@ render shares the width, so stated and unstated titles still line up."
   (rsr/agent-sessions--at-label (plist-get session :worktree-path)
                                 (rsr/agent-sessions--session-worktree-name session)
                                 (rsr/agent-sessions--session-branch session)))
-
-(defvar-local rsr/agent-sessions--worktree-column-width 0
-  "Width of the `@' column of session rows in the current dashboard render.
-Zero when every row's folder heading names its worktree.")
 
 ;;;; Line icons and part faces
 ;;
@@ -1475,15 +1459,15 @@ window; the needs-attention and error row faces still span the whole line."
   (if (string-empty-p string) "" (propertize string 'font-lock-face 'rsr/agent-session-detail)))
 
 (defun rsr/agent-sessions--row-text (prefix state suffix face)
-  "Build a session row: PREFIX, STATE in its own column, then SUFFIX.
+  "Build a session row: PREFIX, then STATE (when non-nil) and SUFFIX.
+STATE goes at the end of what the row says rather than in a column, so a row
+with none spends no blank space before its title.
 FACE dresses the whole row (it is what spans an attention highlight across it),
 and the state's own face is *merged* on top rather than replacing it — merged,
 because the state faces set a foreground and the row face sets a background, and
 either replacing the row face or letting it win would lose one of the two."
-  (let* ((width (rsr/agent-sessions--state-column-width))
-         (column (if (zerop width)
-                     ""
-                   (format (format "%%-%ds" width) (or state ""))))
+  (let* ((column (if state (concat "  " state) ""))
+         (start (+ (length prefix) (if state 2 0)))
          (row (rsr/agent-sessions--dress (concat prefix column suffix) face))
          (state-face (and state (rsr/agent-sessions--state-face state))))
     (when state-face
@@ -1493,11 +1477,17 @@ either replacing the row face or letting it win would lose one of the two."
       ;; ignored.  Earlier faces in the list win per attribute, which is
       ;; exactly the split wanted here — the state's foreground over the row's
       ;; background.
-      (put-text-property (length prefix)
-                         (+ (length prefix) (length state))
+      (put-text-property start
+                         (+ start (length state))
                          'font-lock-face (list state-face face)
                          row))
     row))
+
+(defun rsr/agent-sessions--row-title (title)
+  "TITLE without the activity glyph an agent puts in front of it.
+Claude Code prefixes its terminal title with `✳' when idle and a braille
+spinner frame while working; the row's own status glyph already says that."
+  (replace-regexp-in-string "\\`[✳✻✽✶✢·⠀-⣿]+ *" "" (or title "")))
 
 (defun rsr/agent-sessions--insert-session (entry &optional depth suppress-parent-note)
   "Insert a session row for ENTRY.
@@ -1511,7 +1501,7 @@ indentation conveys the relationship."
          (face (rsr/agent-sessions--face-for status))
          (marker (propertize (concat (rsr/agent-sessions--status-glyph status) " ")
                              'font-lock-face (rsr/agent-sessions--status-face status)))
-         (title (or (plist-get entry :title) ""))
+         (title (rsr/agent-sessions--row-title (plist-get entry :title)))
          (branched-from (plist-get session :branched-from))
          (indent (make-string (* 2 (or depth 0)) ?\s))
          ;; A child row draws `└' in its last indent step, so the tie to the
@@ -1532,20 +1522,13 @@ indentation conveys the relationship."
       ;; fold indicator.
       (magit-insert-heading
         (rsr/agent-sessions--row-text
-         (concat base connector
-                 ;; Blank when the folder heading already names this worktree.
-                 (propertize
-                  (format
-                   (format "%%-%ds" rsr/agent-sessions--worktree-column-width)
-                   (or (plist-get entry :at-label) ""))
-                  'font-lock-face 'rsr/agent-session-worktree-name)
-                 marker
-                 (rsr/agent-sessions--icon (plist-get session :agent-type))
-                 (propertize (format "%-7s " (or (plist-get session :agent-type) ""))
-                             'font-lock-face 'rsr/agent-session-agent))
-         (rsr/agent-sessions--session-state session)
-         (concat title
+         (concat base connector marker title
                  (rsr/agent-orchestration--row-badge id)
+                 ;; Only when it differs from the one its heading names.
+                 (if-let ((label (plist-get entry :at-label)))
+                     (propertize (concat "  " label)
+                                 'font-lock-face 'rsr/agent-session-worktree-name)
+                   "")
                  (rsr/agent-sessions--detail
                   (if (and branched-from (not suppress-parent-note))
                       (format "  ↳ from %s" (cdr branched-from))
@@ -1557,7 +1540,14 @@ indentation conveys the relationship."
                                        (rsr/agent-sessions--session-branch session))))
                       (format "  (%s)" branch)
                     ""))
-                 "\n")
+                 ;; The agent goes last: the title is what tells rows apart.
+                 (if-let ((agent (plist-get session :agent-type)))
+                     (concat "  " (rsr/agent-sessions--icon agent)
+                             (propertize (format "%s" agent)
+                                         'font-lock-face 'rsr/agent-session-agent))
+                   ""))
+         (rsr/agent-sessions--session-state session)
+         "\n"
          face))
       (rsr/agent-sessions--insert-note
        (rsr/agent-sessions--session-note-keys session)
@@ -3857,13 +3847,12 @@ A folder heading shows it, so its rows need repeat only a different one."
 
 (defun rsr/agent-sessions--label-entries (entries)
   "ENTRIES, each carrying the `@' label its row shows as `:at-label'.
-A row in a folder shows its label only when it differs from the one its
-folder heading shows; a row in no folder has no heading and always shows it."
+A row shows its label only when it differs from the one its heading shows:
+its folder's, or for a row in no folder, its repo's."
   (let ((shared (mapcar (lambda (group)
                           (cons (car group)
-                                (and (car group)
-                                     (rsr/agent-sessions--shared-at-label
-                                      (cdr group)))))
+                                (rsr/agent-sessions--shared-at-label
+                                 (cdr group))))
                         (seq-group-by (lambda (e)
                                         (rsr/agent-sessions--folder-for-session
                                          (plist-get e :session)))
@@ -3927,7 +3916,15 @@ any git repository joins the repo its tmux session was started in (see
                                :root (plist-get repo :root)))
     (magit-insert-heading
       (rsr/agent-sessions--icon 'repo)
-      (propertize (plist-get repo :name) 'font-lock-face 'rsr/agent-session-repo))
+      (propertize (plist-get repo :name) 'font-lock-face 'rsr/agent-session-repo)
+      ;; The worktree of the rows in no folder, which have no heading of
+      ;; their own to name it.
+      (if-let ((label (rsr/agent-sessions--shared-at-label
+                       (rsr/agent-sessions--folder-entries
+                        (list :id nil) (plist-get repo :entries)))))
+          (propertize (concat "  " label)
+                      'font-lock-face 'rsr/agent-session-worktree-name)
+        ""))
     (rsr/agent-sessions--insert-note
      (list (rsr/agent-sessions--repo-note-key repo))
      "  ")
@@ -4015,28 +4012,7 @@ reordering still find the group."
           rsr/agent-sessions--row-buffers nil)
     (magit-insert-section (rsr/agent-sessions-root)
       (let ((entries (rsr/agent-sessions--live-entries)))
-        (setq rsr/agent-sessions--state-width
-              (let ((widest (apply #'max 0
-                                   (mapcar (lambda (entry)
-                                             (length
-                                              (or (rsr/agent-sessions--session-state
-                                                   (plist-get entry :session))
-                                                  "")))
-                                           entries))))
-                (if (zerop widest) 0 (1+ widest))))
         (let ((repos (rsr/agent-sessions--build-tree entries)))
-          ;; Sized by the labels rows show, so a dashboard whose folders name
-          ;; every worktree gives the column no width at all.
-          (setq rsr/agent-sessions--worktree-column-width
-                (let ((widest (apply #'max 0
-                                     (mapcar (lambda (entry)
-                                               (string-width
-                                                (or (plist-get entry :at-label) "")))
-                                             (mapcan (lambda (repo)
-                                                       (copy-sequence
-                                                        (plist-get repo :entries)))
-                                                     repos)))))
-                  (if (zerop widest) 0 (1+ widest))))
           (if (null repos)
               (insert "No active sessions.\n")
             (dolist (repo repos)

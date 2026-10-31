@@ -322,7 +322,12 @@ rare, meaningful event, unlike a tool call. `S`
 (`rsr/agent-sessions-sort-by-attention`) drops the attention bucket for anyone
 who would rather rows never move at all; then only creation order remains.
 Repos and worktrees are alphabetical.
-Folder view rows start with a dynamically sized worktree column. Recency sort
+A row reads status glyph, title, agent (`claude`, `pi`), then the workflow
+state last, so it reads "claude is planning" and a row with no state spends no
+blank column before its title. The title drops the `✳`/spinner glyph Claude
+puts in front of it, which the status glyph already conveys. The `@` worktree label
+sits on the heading above, the folder's or, for rows in no folder, the
+repo's; a row repeats it, after its title, only when its own differs. Recency sort
 survives behind `s`
 for when you want it; don't make it the default again.
 

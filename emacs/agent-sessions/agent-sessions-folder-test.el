@@ -114,12 +114,13 @@
                                         (buffer-string)))
                 ;; No session is outside a folder, so nothing stands for one.
                 (should-not (string-match-p "No folder" (buffer-string)))
-                ;; The row does not repeat it, so the column has no width.
-                (should (= rsr/agent-sessions--worktree-column-width 0))
+                ;; The row does not repeat it.
                 (let ((row (seq-find
-                            (lambda (line) (string-match-p "Task$" line))
+                            (lambda (line) (string-match-p "Task  " line))
                             (split-string (buffer-string) "\n" t))))
-                  (should-not (string-match-p "feature/test" row)))
+                  (should-not (string-match-p "feature/test" row))
+                  ;; The agent comes last, after the title.
+                  (should (string-match-p "Task  codex$" row)))
                 (setq rsr/agent-sessions--overview-level 1)
                 (rsr/agent-sessions--show-overview-level 1)
                 (rsr/agent-sessions--refresh)
@@ -163,7 +164,7 @@
                   (rsr/agent-sessions--refresh)
                   (should-not (string-match-p "No folder" (buffer-string)))
                   (should (string-match-p
-                           "^repo\n    .*Loose task\n  Tasks (1)  @wt\n    .*Filed task"
+                           "^repo  @wt\n    .*Loose task\n  Tasks (1)  @wt\n    .*Filed task"
                            (buffer-string)))
                   ;; The loose row folds with the repo's children, as a
                   ;; headingless group has no line of its own to fold to.
@@ -177,12 +178,13 @@
         (mapc #'kill-buffer (list a b dashboard))
         (delete-directory root t)))))
 
-(ert-deftest rsr/folders-worktree-column-follows-longest-name ()
+(ert-deftest rsr/folders-loose-rows-name-only-a-different-worktree ()
   (rsr/folder-test-with-db
     (let* ((root (make-temp-file "repo-width-" t))
            (a (generate-new-buffer " *width-a*"))
            (b (generate-new-buffer " *width-b*"))
            (dashboard (generate-new-buffer " *width-dashboard*"))
+           (rsr/agent-sessions-icons nil)
            (entries (list
                      (list :id "a" :title "First task"
                            :session (list :buffer a :repo "repo" :repo-root root
@@ -198,18 +200,20 @@
               (cl-letf (((symbol-function 'rsr/agent-sessions--live-entries)
                          (lambda () entries)))
                 (rsr/agent-sessions--refresh)
-                (should (= rsr/agent-sessions--worktree-column-width 20))
-                (let ((lines (split-string (buffer-string) "\n" t)))
-                  (should (seq-some
-                           (lambda (line)
-                             (string-match-p
-                              "^    @short +  .*First task$" line))
-                           lines))
-                  (should (seq-some
-                           (lambda (line)
-                             (string-match-p
-                              "^    @long-worktree-name +  .*Second task$" line))
-                           lines))))))
+                ;; The repo heading names one worktree; only the row in the
+                ;; other one names its own, after the title.
+                (let* ((text (buffer-string))
+                       (heading (and (string-match "^repo  \\(@[^\n]+\\)$" text)
+                                     (match-string 1 text)))
+                       (lines (split-string text "\n" t)))
+                  (should (member heading '("@short" "@long-worktree-name")))
+                  (should (= 1 (seq-count
+                                (lambda (line)
+                                  (string-match-p
+                                   "^    .*task  @\\(short\\|long-worktree-name\\)$"
+                                   line))
+                                lines)))
+                  (should-not (string-match-p (concat "task  " heading) text))))))
         (mapc #'kill-buffer (list a b dashboard))
         (delete-directory root t)))))
 
