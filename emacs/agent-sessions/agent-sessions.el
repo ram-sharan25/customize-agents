@@ -3621,7 +3621,7 @@ Point may be on the link row or inside its note."
                           (rsr/agent-sessions--session-links session))))))))
 
 (defcustom rsr/agent-sessions-linear-org-file
-  (expand-file-name "~/Stillness/Brain/Dashboard/linear.org")
+  (expand-file-name "~/Stillness/Brain/output/linear.org")
   "Org file of pulled Linear issues, one heading per issue with ID-LINEAR.
 RET on a Linear link row jumps to the issue's heading here.  nil, or a
 missing file, sends every Linear link to `rsr/agent-sessions-linear-app'."
