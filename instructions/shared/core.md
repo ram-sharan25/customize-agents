@@ -102,3 +102,9 @@ is preserved and user understands what you are saying.
 ## Verification
 Rather than assuming things verify the code or any artifacts possible and if
 that also does not resolve the issue or confusion, ask the user for the resolution.
+
+## Secrets
+
+My keys and tokens live in Bitwarden. Never export, print, or copy a key to
+disk; point me at the vault. Each repository documents the secrets it uses in
+its own README; read that before touching encrypted files there.
