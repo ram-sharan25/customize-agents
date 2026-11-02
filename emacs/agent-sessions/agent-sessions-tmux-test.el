@@ -852,6 +852,60 @@ covers attaching and the view going with its client."
         (should-not (rsr/agent-sessions-tmux-reattach))
         (should-not (rsr/agent-tmux-proxies))))))
 
+(ert-deftest rsr/agent-tmux-reattach-resumes-a-restored-window-in-place ()
+  "A window tmux-resurrect restored gets its shell's environment and agent back."
+  (let ((dir (file-name-as-directory (make-temp-file "tmux-reattach-" t))))
+    (rsr/agent-tmux-test--with-fake
+        (rsr/agent-tmux-test--reattach-responder
+         (format "@9\trepo\t4242\t%s\t1-5\t1-5\t1\n" dir))
+      (cl-letf (((symbol-function 'rsr/agent-sessions--emacs-alive-p) #'ignore))
+        (rsr/agent-tmux-test--log-row "1-5" dir "sid-abc")
+        (let* ((proxy (car (rsr/agent-sessions-tmux-reattach)))
+               (id (buffer-local-value 'rsr/agent-session-id proxy))
+               (respawn (caar (rsr/agent-tmux-test--called "respawn-pane")))
+               (names (mapcar #'caar rsr/agent-tmux-test--calls)))
+          (should (equal (seq-take respawn 6) (list "respawn-pane" "-k" "-t" "@9" "-c" dir)))
+          (should (member (format "EMACS_AGENT_SESSION_ID=%s" id) respawn))
+          (should (seq-find (lambda (c) (equal (car c) (list "set-option" "-w" "-t" "@9"
+                                                             "@agent-session-id" id)))
+                            rsr/agent-tmux-test--calls))
+          (should (seq-find (lambda (c) (equal (car c) (list "set-option" "-w" "-u" "-t" "@9"
+                                                             "@agent-session-restored")))
+                            rsr/agent-tmux-test--calls))
+          (should (seq-find (lambda (c) (equal (car c) (list "send-keys" "-t" "@9" "-l" "--"
+                                                             "claude --resume sid-abc")))
+                            rsr/agent-tmux-test--calls))
+          ;; The agent is typed into the new shell, not the restored one.
+          (should (< (cl-position "respawn-pane" names :test #'equal)
+                     (cl-position "send-keys" names :test #'equal))))))))
+
+(ert-deftest rsr/agent-tmux-reattach-leaves-a-running-agent-running ()
+  "Only a restored window is restarted; a window whose agent survived is not."
+  (let ((dir (file-name-as-directory (make-temp-file "tmux-reattach-" t))))
+    (rsr/agent-tmux-test--with-fake
+        (rsr/agent-tmux-test--reattach-responder
+         (format "@9\trepo\t4242\t%s\t1-5\t1-5\t\n" dir))
+      (cl-letf (((symbol-function 'rsr/agent-sessions--emacs-alive-p) #'ignore))
+        (rsr/agent-tmux-test--log-row "1-5" dir "sid-abc")
+        (should (rsr/agent-sessions-tmux-reattach))
+        (should-not (rsr/agent-tmux-test--called "respawn-pane"))
+        (should-not (rsr/agent-tmux-test--called "send-keys"))))))
+
+(ert-deftest rsr/agent-tmux-reattach-closes-a-restored-duplicate ()
+  "A restored window for a conversation already open elsewhere is closed."
+  (let ((dir (file-name-as-directory (make-temp-file "tmux-reattach-" t))))
+    (rsr/agent-tmux-test--with-fake
+        (rsr/agent-tmux-test--reattach-responder
+         (format "@9\trepo\t4242\t%s\t1-5\t1-5\t1\n" dir))
+      (cl-letf (((symbol-function 'rsr/agent-sessions--emacs-alive-p) #'ignore)
+                ((symbol-function 'rsr/agent-sessions--buffer-for-agent-session)
+                 (lambda (sid) (and (equal sid "sid-abc") (current-buffer)))))
+        (rsr/agent-tmux-test--log-row "1-5" dir "sid-abc")
+        (should-not (rsr/agent-sessions-tmux-reattach))
+        (should (equal (mapcar #'car (rsr/agent-tmux-test--called "kill-window"))
+                       '(("kill-window" "-t" "@9"))))
+        (should-not (rsr/agent-tmux-test--called "respawn-pane"))))))
+
 (ert-deftest rsr/agent-tmux-reattached-proxy-drops-its-alias-on-kill ()
   (let ((dir (file-name-as-directory (make-temp-file "tmux-reattach-" t))))
     (rsr/agent-tmux-test--with-fake

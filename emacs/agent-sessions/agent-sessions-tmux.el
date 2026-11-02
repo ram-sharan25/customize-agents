@@ -439,10 +439,22 @@ given with -e never reaches the shell."
            ,@(and detached '("-d"))
            ,@(and name (list "-n" name))
            "-c" ,dir
-           "env" ,@(mapcan (lambda (var) (list "-u" var))
-                           rsr/agent-tmux-unset-environment)
-           ,@env
-           ,(or (getenv "SHELL") "/bin/sh") "-l")))
+           ,@(rsr/agent-tmux--shell-command env))))
+
+(defun rsr/agent-tmux--shell-command (env)
+  "The command a window runs: the user's login shell with ENV applied."
+  `("env" ,@(mapcan (lambda (var) (list "-u" var))
+                    rsr/agent-tmux-unset-environment)
+    ,@env
+    ,(or (getenv "SHELL") "/bin/sh") "-l"))
+
+(defun rsr/agent-tmux-respawn (window dir env)
+  "Replace WINDOW's shell with a new one at DIR, run as `rsr/agent-tmux-new-window'
+runs it, with ENV.  For a window tmux-resurrect restored: its shell started
+without the environment that lets the agent's hooks reach Emacs."
+  (apply #'rsr/agent-tmux--ok
+         `("respawn-pane" "-k" "-t" ,window "-c" ,dir
+           ,@(rsr/agent-tmux--shell-command env))))
 
 (defun rsr/agent-tmux-select-window (window)
   "Make WINDOW the current window of its session."
@@ -525,6 +537,11 @@ its last session, which is how the last agent anywhere ends when it quits."
 (defconst rsr/agent-tmux--log-id-option "@agent-session-log-id"
   "Window option holding the terminal id whose log rows describe the window.")
 
+(defconst rsr/agent-tmux--restored-option "@agent-session-restored"
+  "Window option set by the tmux-resurrect restore hook (`resurrect/').
+The window's tags were put back after a restore, but it runs a fresh shell,
+not the agent, so reattaching it must start the agent again.")
+
 (defun rsr/agent-tmux-tag-window (window id &optional log-id)
   "Record terminal ID, and LOG-ID (default ID), on WINDOW for a later Emacs.
 With LOG-ID, ID is left as it is and only the log id moves."
@@ -555,19 +572,21 @@ exposes /proc; macOS needs `ps eww', which may be refused."
 
 (defun rsr/agent-tmux-agent-windows ()
   "Windows on the server that agent-sessions opened, as plists.
-Each is (:window W :session S :dir DIR :id ID :log-id LOG-ID): ID the
-terminal id the window's shell was given, LOG-ID the one its latest log rows
-are under.  Untagged windows are recognised from their shell's environment
-when that can be read; any other window is left out."
+Each is (:window W :session S :dir DIR :id ID :log-id LOG-ID :restored R):
+ID the terminal id the window's shell was given, LOG-ID the one its latest
+log rows are under, R non-nil for a window tmux-resurrect restored (see
+`rsr/agent-tmux--restored-option').  Untagged windows are recognised from
+their shell's environment when that can be read; any other window is left out."
   (when-let ((out (rsr/agent-tmux--output
                    "list-panes" "-a" "-F"
                    (concat "#{window_id}\t#{session_name}\t#{pane_pid}\t"
                            "#{pane_current_path}\t#{" rsr/agent-tmux--id-option "}\t"
-                           "#{" rsr/agent-tmux--log-id-option "}"))))
+                           "#{" rsr/agent-tmux--log-id-option "}\t"
+                           "#{" rsr/agent-tmux--restored-option "}"))))
     (let (seen windows)
       (dolist (line (split-string out "\n" t))
         (pcase (split-string line "\t")
-          (`(,win ,session ,pid ,dir ,tag ,log-tag)
+          (`(,win ,session ,pid ,dir ,tag ,log-tag . ,restored)
            ;; A view lists the window it links too; the window is the base's.
            (unless (or (member win seen) (rsr/agent-tmux-view-session-p session))
              (push win seen)
@@ -575,7 +594,8 @@ when that can be read; any other window is left out."
                                 (rsr/agent-tmux--pane-env-id (string-to-number pid))
                               tag)))
                (push (list :window win :session session :dir dir :id id
-                           :log-id (if (string-empty-p log-tag) id log-tag))
+                           :log-id (if (string-empty-p log-tag) id log-tag)
+                           :restored (not (string-empty-p (or (car restored) ""))))
                      windows))))))
       (nreverse windows))))
 

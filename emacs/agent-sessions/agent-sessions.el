@@ -5071,6 +5071,13 @@ Returns the new proxies."
                                 FROM sessions WHERE emacs_sid = ?
                                ORDER BY id DESC LIMIT 1"
                              (list log-id))))))
+        (when (and row (plist-get w :restored) (car row)
+                   (rsr/agent-sessions--buffer-for-agent-session (car row)))
+          ;; A window tmux-resurrect restored, for a conversation already
+          ;; resumed elsewhere (restored before tmux was): it is a bare shell
+          ;; that would only stand beside the agent as a stray.
+          (rsr/agent-tmux-kill-window (plist-get w :window))
+          (setq row nil))
         (when row
           (pcase-let* ((`(,agent-sid ,agent-type ,worktree ,title) row)
                        (dir (if (and worktree (file-directory-p worktree))
@@ -5112,6 +5119,8 @@ Returns the new proxies."
               (rsr/agent-sessions--log-update buf agent-type agent-sid)
               (rsr/agent-sessions--folder-hydrate buf agent-sid)
               (rsr/agent-orchestration--hydrate id))
+            (when (plist-get w :restored)
+              (rsr/agent-sessions--tmux-resume-restored buf agent-type agent-sid))
             (push buf adopted)))))
     (rsr/agent-tmux-forget-panes)
     (when adopted (rsr/agent-sessions--refresh-if-visible))
@@ -5119,6 +5128,27 @@ Returns the new proxies."
       (message "Reattached %d tmux session%s" (length adopted)
                (if (= 1 (length adopted)) "" "s")))
     (nreverse adopted)))
+
+(defun rsr/agent-sessions--tmux-resume-restored (buf agent-type agent-sid)
+  "Start the agent again in BUF's window, which tmux-resurrect restored.
+The restored shell lacks the environment that lets the agent's hooks reach
+Emacs, so it is replaced by one that has it, in the same window; then the
+conversation AGENT-SID of AGENT-TYPE, when there is one, is resumed there."
+  (with-current-buffer buf
+    (let ((window rsr/agent-tmux-window)
+          (template (and agent-sid agent-type
+                         (alist-get (intern agent-type)
+                                    rsr/agent-session-resume-commands))))
+      (rsr/agent-tmux-respawn window default-directory
+                              (rsr/agent-sessions--terminal-environment
+                               rsr/agent-session-id))
+      ;; The new shell carries this proxy's id, so the window is tagged with it.
+      (rsr/agent-tmux-tag-window window rsr/agent-session-id)
+      (rsr/agent-tmux--ok "set-option" "-w" "-u" "-t" window
+                          rsr/agent-tmux--restored-option)
+      (when template
+        (setq-local rsr/agent-session--resuming-session-id agent-sid)
+        (rsr/agent-sessions--terminal-send buf (format template agent-sid))))))
 
 (defun rsr/agent-sessions--terminal-send (buf string)
   "Send STRING followed by Enter to the terminal in BUF."

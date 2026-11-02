@@ -59,6 +59,20 @@ placeholder window that is closed once the agent's window opens: tmux gives
 every new session a window, and when it was a shell it outlived the last agent,
 so `k` on that agent left the session alive.
 
+**After a reboot, tmux-resurrect's windows are the agents' windows.**
+Resurrect (continuum restores it at server start) brings each window back as
+a bare shell: no window options, no environment, no agent. Left alone, each
+became a stray beside the agent restored from the dashboard. Its hooks in
+`resurrect/` close the gap: the save hook drops `~view-` sessions (a restored
+view is a copy of a window) and writes each window's tags to
+`agent-sessions-tags.tsv` beside the save; the restore hook puts them back,
+marks the window `@agent-session-restored`, and asks a running Emacs to
+reattach. Reattach restarts a marked window's shell with the terminal
+environment (`respawn-pane`, so hooks reach Emacs) and resumes the logged
+conversation in it; a marked window whose conversation is already open, from
+an `R` before tmux came back, is closed instead. Registered in tmux.conf as
+`@resurrect-hook-post-save-layout` and `@resurrect-hook-post-restore-all`.
+
 **Two agents of one repo on screen need a view, and only `o` makes one.**
 `*tmux: S*` shows one tmux window at a time, so "opening" a second agent of
 S switches it. `o` (whose point is to see two at once) instead attaches a
