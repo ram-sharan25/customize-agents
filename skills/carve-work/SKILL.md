@@ -163,20 +163,20 @@ A sitting is a `** TODO` heading whose text is its name, with `:OUTCOME:`,
 tag :deep: when deep, and no tag means shallow; nothing else new. A sitting
 that may be thrown away says so in its heading text. The sitting template:
 
-#+begin_src org
+```org
 ** TODO <name> :deep:
 :PROPERTIES:
 :OUTCOME: <what exists afterwards>
 :NEEDS: <what must be at hand>
 :Effort: 1:30
 :END:
-#+end_src
+```
 
 One sitting is shown as that `** TODO` heading, to go under `* Tasks` in the
 Area hub file or the project file the work belongs to.
 Two or more sittings are shown as a project file skeleton, the whole file:
 
-#+begin_src org
+```org
 #+TITLE: <name of the work>
 #+PROPERTY: AREA <Area>
 #+FILETAGS: :<kind>:
@@ -194,7 +194,7 @@ Two or more sittings are shown as a project file skeleton, the whole file:
 * Log
 
 * Notes
-#+end_src
+```
 
 No sub-tasks under a sitting: projects, not parents. Work that needs more
 than one heading is a project file whose tasks are the sittings, never a
@@ -255,7 +255,7 @@ Read back, the principle each sitting applied:
 
 The Org text, shown, not written:
 
-#+begin_src org
+```org
 #+TITLE: Reading Codebase: Flask
 #+PROPERTY: AREA Craft
 #+FILETAGS: :learn:
@@ -301,7 +301,7 @@ Carved 2026-11-02 with carve-work; the earlier task of the same name in
 * Log
 
 * Notes
-#+end_src
+```
 
 Written to the Brain on the user's word on 2026-11-02; the skill ended with
 the text shown.
@@ -313,7 +313,7 @@ Area: Impact. Room: work. Kind: decide.
 The walk, carved by the user on 2026-11-02:
 
 - Q1: "a document about how to approach … alternatives along with why and why nots"; pinned by naming the reader: "compile them in a single document and then present it to my seniors".
-- Q2: "the same jumping in as in Flask … I tried to understand how Worldview is working for this feature"; the started attack, Worldview, is sitting 1. Asked for another way in, the user added Mapbox: "look for alternatives about how basemaps can be served … taking Mapbox as an example"; kept as a second context sitting beside the first.
+- Q2: "the same jumping in as in Flask … I tried to understand how Worldview is working for this feature"; the started attack, Worldview, is sitting 1. The user added Mapbox unprompted: "look for alternatives about how basemaps can be served … taking Mapbox as an example"; kept as a second context sitting beside the first. The question "Is there another way in?" comes from this.
 - Q3, Q4, in the user's words: Worldview, "is it requesting different layers or hiding on the client, is it using a different provider, where is the data source"; Mapbox; "by questioning its approach I can have alternatives … design a system for that"; one per alternative, "why and why not"; "compile them in a single document and present it to my seniors".
 - Q5: four now, plus one per alternative carved after sitting 3; the user does not know how many alternatives there will be. A dependency, not a cap.
 - Q6: "all is deep, design thinking being mine, true."
@@ -329,10 +329,10 @@ Read back, the principle each sitting applied:
 
 The Org text, shown, not written:
 
-#+begin_src org
+```org
 #+TITLE: Basemap with no labels and borders
 #+PROPERTY: AREA Impact
-#+FILETAGS: :build:
+#+FILETAGS: :decide:
 #+ARCHIVE: ::* Archive
 
 * Outcome
@@ -379,7 +379,7 @@ Carved 2026-11-02 with carve-work; the earlier task of the same name in
 * Log
 
 * Notes
-#+end_src
+```
 
 Written to the Brain on the user's word on 2026-11-02; the skill ended with
 the text shown.

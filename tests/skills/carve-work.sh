@@ -43,11 +43,11 @@ missing=$(awk '
     if (src < 1) print "no Source: with a URL under " q }' "$f")
 [[ -z "$missing" ]] || fail "$f: $missing"
 # Every line naming one of the four people carries a URL, a (Qn) pointer, or sits in a question block.
-# Lines inside an Org src block are the user's own carving (an Outcome may name Flask's author), not a claim.
+# Lines inside an ```org block are the user's own carving (an Outcome may name Flask's author), not a claim.
 unsourced=$(awk '
   /^## 2\. /{sec2=1} /^## / && !/^## 2\. /{sec2=0; inq=0}
   /^### [0-9]+\. /{inq=sec2}
-  /^#\+begin_src org/{inblk=1; next} /^#\+end_src/{inblk=0; next}
+  /^```org/{inblk=1; next} /^```/{inblk=0; next}
   /Hashimoto|Zechner|Ronacher|Karpathy/ && !/https:\/\// && !/\(Q[0-9]+([-–]Q?[0-9]+)?\)/ && !inq && !inblk { print NR ": " $0 }' "$f")
 [[ -z "$unsourced" ]] || fail "$f: named person without a source or (Qn) pointer: $unsourced"
 require_text "$f" "What will exist when this is done that does not exist now?"
@@ -101,8 +101,8 @@ example_org() {  # example_org "<## heading text>": the Org src block under that
   awk -v h="$1" '
     index($0, "## " h) == 1 { on=1; next }
     on && /^## / { exit }
-    on && /^#\+begin_src org/ { b=1; next }
-    on && /^#\+end_src/ { b=0 }
+    on && /^```org/ { b=1; next }
+    on && /^```/ { b=0 }
     on && b' "$f"
 }
 check_example() {  # check_example NAME ORGTEXT N: N sittings, each complete, nothing else new
@@ -132,6 +132,7 @@ basemap=$(example_org "6. Worked example, work room: Basemap with no labels and 
 [[ -n "$basemap" ]] || fail "$f: no Org block under the basemap example"
 check_example basemap "$basemap" 4
 grep -qF -- "#+PROPERTY: AREA Impact" <<<"$basemap" || fail "basemap: AREA is not Impact"
+grep -qF -- "#+FILETAGS: :decide:" <<<"$basemap" || fail "basemap: FILETAGS is not :decide:"
 grep -qiE "seniors" <<<"$basemap" || fail "basemap: Outcome does not name the reader"
 grep -qiE "known only after sitting 3" <<<"$basemap" || fail "basemap: no rule for the sittings carved later"
 # The walks: entry, the user's answers, and a read-back with a (Qn) per sitting.
@@ -145,6 +146,9 @@ done
 require_text "$f" "Reading Codebase: Flask"
 require_text "$f" "Basemap with no labels and borders"
 require_regex "$f" "Q1.*understand how large codebases are written"
+# Review fix: the walk says what happened; Mapbox was the user's own addition, not an answer to a question.
+forbid_text "$f" "Asked for another way in"
+require_regex "$f" "added Mapbox unprompted"
 # Task 5: the Excuse / Reality table, and the README row.
 require_regex "$f" '\| *Excuse *\| *Reality *\|'
 rows=$(awk '/^## Excuse \/ Reality/{on=1; next} on && /^## /{exit} on && /^\|/' "$f" | grep -vcE '^\| *(Excuse|-)')
