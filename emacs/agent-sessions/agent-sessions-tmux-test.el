@@ -46,6 +46,10 @@ proxy BODY leaves behind."
   (seq-filter (lambda (c) (equal (caar c) subcommand))
               (mapcar #'identity rsr/agent-tmux-test--calls)))
 
+(defun rsr/agent-tmux-test--arg (call flag)
+  "The value after FLAG in recorded CALL's argv."
+  (cadr (member flag (car call))))
+
 (defun rsr/agent-tmux-test--standard (args &optional panes)
   "A responder: session exists, new windows are @7, PANES is list-panes output."
   (pcase (car args)
@@ -91,16 +95,18 @@ proxy BODY leaves behind."
                       (directory-file-name main) (or name folder))))
     wt))
 
-(ert-deftest rsr/agent-tmux-target-names-worktrees-repo-slash-worktree ()
+(ert-deftest rsr/agent-tmux-target-puts-worktrees-in-the-repo-session ()
   (let* ((parent (make-temp-file "tmux-test-wt-" t))
-         (main (expand-file-name "proj" parent)))
+         (main (expand-file-name "proj" parent))
+         (home (cons "proj" (file-name-as-directory main))))
     (make-directory (expand-file-name ".git" main) t)
     (let ((prefixed (rsr/agent-tmux-test--worktree main "proj-feature" "feature"))
           (plain (rsr/agent-tmux-test--worktree main "scratch")))
-      (should (equal (car (rsr/agent-tmux-target (expand-file-name "src" main))) "proj"))
-      (should (equal (rsr/agent-tmux-target prefixed)
-                     (cons "proj/feature" (file-name-as-directory prefixed))))
-      (should (equal (car (rsr/agent-tmux-target plain)) "proj/scratch")))))
+      (should (equal (rsr/agent-tmux-target (expand-file-name "src" main)) home))
+      (should (equal (rsr/agent-tmux-target prefixed) home))
+      (should (equal (rsr/agent-tmux-target plain) home))
+      (should (equal (seq-take (rsr/agent-tmux-checkout plain) 2)
+                     '("proj" "scratch"))))))
 
 (ert-deftest rsr/agent-tmux-target-treats-other-git-files-as-own-checkout ()
   (let ((dir (make-temp-file "tmux-test-sub-" t)))
@@ -121,7 +127,32 @@ proxy BODY leaves behind."
                     "commit" "-q" "--allow-empty" "-m" "init")
       (call-process "git" nil nil nil "worktree" "add" "-q" "-b" "hotfix" wt))
     (should (equal (rsr/agent-tmux-target wt)
-                   (cons "app/hotfix" (file-name-as-directory wt))))))
+                   ;; git records the main checkout's true path (/private/var).
+                   (cons "app" (file-name-as-directory (file-truename main)))))))
+
+;; A worktree's agent joins the repo's session, opening in the worktree, and a
+;; session it creates starts in the main checkout so it outlives the worktree.
+(ert-deftest rsr/agent-tmux-worktree-agent-joins-the-repo-session ()
+  (let* ((parent (make-temp-file "tmux-test-join-" t))
+         (main (file-name-as-directory (expand-file-name "proj" parent))))
+    (make-directory (expand-file-name ".git" main) t)
+    (let ((wt (file-name-as-directory
+               (rsr/agent-tmux-test--worktree main "proj-feature" "feature"))))
+      (rsr/agent-tmux-test--with-fake
+          (lambda (args)
+            (pcase (car args)
+              ("has-session" nil)
+              ("new-session" "@1")
+              ("new-window" "@2")
+              (_ "")))
+        (let ((rsr/agent-sessions-terminal 'tmux))
+          (rsr/agent-sessions--create-terminal wt))
+        (let ((new-session (car (rsr/agent-tmux-test--called "new-session")))
+              (new-window (car (rsr/agent-tmux-test--called "new-window"))))
+          (should (equal (rsr/agent-tmux-test--arg new-session "-s") "proj"))
+          (should (equal (rsr/agent-tmux-test--arg new-session "-c") main))
+          (should (equal (rsr/agent-tmux-test--arg new-window "-t") "=proj:"))
+          (should (equal (rsr/agent-tmux-test--arg new-window "-c") wt)))))))
 
 ;;; Folders outside git
 
@@ -1149,6 +1180,21 @@ folder as its default, and is still not nested under it."
                                 (file-name-nondirectory
                                  (directory-file-name root)))))
                 (should (equal root (cdr target))))
+              ;; From a worktree the repo's session opens in the worktree,
+              ;; not where the session started.
+              (let ((wt (file-name-as-directory
+                         (rsr/agent-tmux-test--worktree
+                          root (concat (file-name-nondirectory
+                                        (directory-file-name root))
+                                       "-side"))))
+                    (path-of (symbol-function 'rsr/agent-tmux-session-path)))
+                (cl-letf (((symbol-function 'rsr/agent-tmux-session-path)
+                           (lambda (s) (if (equal s (car (rsr/agent-tmux-target root)))
+                                           root
+                                         (funcall path-of s)))))
+                  (setq defaults nil)
+                  (should (equal (cdr (rsr/agent-tmux-read-target wt)) wt)))
+                (delete-directory wt t))
               ;; A tmux buffer's own session is the default.
               (setq-local rsr/agent-tmux-session "study")
               (should (equal '("other" . "/tmp/other/")

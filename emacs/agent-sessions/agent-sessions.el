@@ -5197,11 +5197,15 @@ BUFNAME is the desired buffer name.  Loads the backend package lazily."
 (defun rsr/agent-sessions--tmux-open (dir bufname)
   "Open a window in DIR's tmux session and register a proxy buffer BUFNAME.
 The window gets the same environment the other backends inject, so hooks and
-`emacs-share' find this session; the proxy carries its dashboard state."
+`emacs-share' find this session; the proxy carries its dashboard state.  A
+session created here starts in the repo's main checkout even when DIR is a
+linked worktree: its start directory names the repo it belongs to, and must
+outlive the worktree."
   (pcase-let* ((`(,session . ,_root) (rsr/agent-tmux-target dir))
                (options rsr/agent-sessions--tmux-window-options)
                (id (format "%d-%d" (emacs-pid) (cl-incf rsr/agent-session-counter)))
-               (created (rsr/agent-tmux-ensure-session session dir))
+               (home (or (nth 3 (rsr/agent-tmux-checkout dir)) dir))
+               (created (rsr/agent-tmux-ensure-session session home))
                (window (and created
                             (rsr/agent-tmux-new-window
                              session dir (rsr/agent-sessions--terminal-environment id)

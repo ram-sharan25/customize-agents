@@ -77,7 +77,7 @@ in `timers', run by `rsr/agent-wt-test--run-timers'."
       (should (equal (car (rsr/agent-tmux-checkout main)) "trunk"))
       (rsr/agent-wt-test--git main "config" "agent-sessions.repo-name" "proj")
       (should (equal (rsr/agent-tmux-recorded-repo-name main) "proj"))
-      (should (equal (rsr/agent-tmux-checkout main) (list "proj" nil main)))
+      (should (equal (rsr/agent-tmux-checkout main) (list "proj" nil main main)))
       (should (equal (seq-take (rsr/agent-tmux-checkout side) 2) '("proj" "feature")))
       (should (equal (plist-get (rsr/agent-session--repo-info side) :repo) "proj")))))
 

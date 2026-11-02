@@ -59,6 +59,19 @@ placeholder window that is closed once the agent's window opens: tmux gives
 every new session a window, and when it was a shell it outlived the last agent,
 so `k` on that agent left the session alive.
 
+**One tmux session per repo, not per worktree.** A linked worktree used to get
+a session of its own, `REPO/WORKTREE`. Folders now group a repo's agents by
+task, which a worktree split only cut across, and worktrees are short-lived:
+merged and removed, each left its session (and any agent still in it)
+running in a deleted directory. `rsr/agent-tmux-target` now names the session
+after the repo from any of its checkouts; each window still opens in its own
+worktree (`new-window -c`). A session is created in the main checkout, never
+a worktree, because its start directory is how `--tmux-session-home` finds
+the repo, and it must outlive the worktree. `rsr/agent-tmux-read-target`
+puts a window in the repo's session at the asking directory's checkout,
+not the session's start directory, so `C-c i i` in a worktree works there.
+Existing `REPO/WORKTREE` sessions are left alone and end with their last agent.
+
 **After a reboot, tmux-resurrect's windows are the agents' windows.**
 Resurrect (continuum restores it at server start) brings each window back as
 a bare shell: no window options, no environment, no agent. Left alone, each

@@ -141,9 +141,10 @@ folder.  Reads `.git/config' rather than running git."
                   (match-string-no-properties 1)))))))
 
 (defun rsr/agent-tmux-checkout (dir)
-  "For DIR inside a git checkout, return (REPO WORKTREE ROOT), else nil.
+  "For DIR inside a git checkout, return (REPO WORKTREE ROOT MAIN), else nil.
 REPO is the repository's name, WORKTREE nil for the main checkout and the
-linked worktree's name otherwise, ROOT the checkout's top directory.  Reads
+linked worktree's name otherwise, ROOT the checkout's top directory and MAIN
+the main checkout's, which is ROOT outside a linked worktree.  Reads
 the `.git' file of a linked worktree (\"gitdir: <main>/.git/worktrees/X\")
 rather than running git.  A worktree folder named REPO-X is called X.  REPO
 is the name recorded by `rsr/agent-tmux-recorded-repo-name' when there is one."
@@ -152,7 +153,7 @@ is the name recorded by `rsr/agent-tmux-recorded-repo-name' when there is one."
            (dotgit (expand-file-name ".git" root))
            (folder (file-name-nondirectory (directory-file-name root))))
       (if (file-directory-p dotgit)
-          (list (or (rsr/agent-tmux-recorded-repo-name root) folder) nil root)
+          (list (or (rsr/agent-tmux-recorded-repo-name root) folder) nil root root)
         (let* ((gitdir (with-temp-buffer
                          (ignore-errors (insert-file-contents dotgit))
                          (and (re-search-forward "^gitdir: *\\(.+\\)$" nil t)
@@ -162,7 +163,7 @@ is the name recorded by `rsr/agent-tmux-recorded-repo-name' when there is one."
                           (match-string 1 gitdir))))
           (if (not main)
               ;; A submodule or other `.git' file: a checkout of its own.
-              (list folder nil root)
+              (list folder nil root root)
             (let ((repo (or (rsr/agent-tmux-recorded-repo-name main)
                             (file-name-nondirectory (directory-file-name main)))))
               (list repo
@@ -170,20 +171,21 @@ is the name recorded by `rsr/agent-tmux-recorded-repo-name' when there is one."
                              (> (length folder) (1+ (length repo))))
                         (substring folder (1+ (length repo)))
                       folder)
-                    root))))))))
+                    root
+                    (file-name-as-directory main)))))))))
 
 (defun rsr/agent-tmux-target (&optional dir)
   "Return (SESSION . DIRECTORY) for DIR (default `default-directory').
-In a repository's main checkout: the repository's name and root.  In a linked
-worktree: REPO/WORKTREE and the worktree's root, so each worktree is its own
-workspace.  Elsewhere: a session name read from the user, and DIR."
+Inside a repository: the repository's name and its main checkout's root, from
+any of its worktrees.  One session holds all of a repo's agents, each window
+in its own checkout; the dashboard's folders tell them apart, and a session
+per worktree outlived the worktree.  Elsewhere: a session name read from the
+user, and DIR."
   (let ((dir (expand-file-name (or dir default-directory))))
     (or rsr/agent-tmux--target
         (pcase (rsr/agent-tmux-checkout dir)
-          (`(,repo ,worktree ,root)
-           (cons (rsr/agent-tmux-session-name
-                  (if worktree (concat repo "/" worktree) repo))
-                 root))
+          (`(,repo ,_worktree ,_root ,main)
+           (cons (rsr/agent-tmux-session-name repo) main))
           (_
            (let ((name (string-trim (completing-read "tmux session: "
                                                      (rsr/agent-tmux-sessions)))))
@@ -194,14 +196,13 @@ workspace.  Elsewhere: a session name read from the user, and DIR."
   "Ask for the tmux session to open in; return (SESSION . DIRECTORY).
 Unlike `rsr/agent-tmux-target', asks inside a repository too.  The default
 is the session of the current tmux buffer, else the one
-`rsr/agent-tmux-target' would derive from DIR.  An existing session opens in
-its own start directory; a new one in DIR's checkout root, or DIR."
+`rsr/agent-tmux-target' would derive from DIR.  The repo's own session opens
+in DIR's checkout root, so an agent asked for from a worktree works there;
+another existing session in its own start directory; a new one in DIR."
   (let* ((dir (expand-file-name (or dir default-directory)))
          (derived (pcase (rsr/agent-tmux-checkout dir)
-                    (`(,repo ,worktree ,root)
-                     (cons (rsr/agent-tmux-session-name
-                            (if worktree (concat repo "/" worktree) repo))
-                           root))))
+                    (`(,repo ,_worktree ,root ,_main)
+                     (cons (rsr/agent-tmux-session-name repo) root))))
          (default (or rsr/agent-tmux-session (car derived)))
          (name (string-trim
                 (completing-read (format-prompt "tmux session" default)
@@ -210,8 +211,8 @@ its own start directory; a new one in DIR's checkout root, or DIR."
     (when (string-empty-p name) (user-error "No session name given"))
     (let ((session (rsr/agent-tmux-session-name name)))
       (cons session
-            (or (rsr/agent-tmux-session-path session)
-                (and (equal session (car derived)) (cdr derived))
+            (or (and (equal session (car derived)) (cdr derived))
+                (rsr/agent-tmux-session-path session)
                 dir)))))
 
 (defvar rsr/agent-tmux--session-paths (make-hash-table :test 'equal)
