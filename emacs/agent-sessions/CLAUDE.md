@@ -413,7 +413,14 @@ database, the `+` and `F` pickers still offer it, and it shows again once a
 session joins it. Reordering folders works on the visible ones only, since a
 swap with a hidden neighbour would look like no move.
 `F` on a row moves it to a folder in that repo and creates an unmatched name.
-`F` on a folder heading renames or deletes that repo's folder. Folder names may
+`F` on a folder heading renames or deletes that repo's folder.
+`F` on a repo heading opens one list of the repo's folders: "+ New folder"
+first, then every folder with its live session count, the empty (hidden) ones
+dimmed. RET on a folder offers rename or delete; `C-k` deletes the highlighted
+one after a y/n and reopens the list, so the folders closed sessions left
+behind can be cleared in a row. The tree still hides empty folders; the list
+is where they are seen and removed. `C-k` reads Vertico's highlighted
+candidate, else the minibuffer text, and leaves `completing-read` by a throw. Folder names may
 repeat in different repos. SQLite schema version 3 migrates the old global
 assignments using the session log's repo root, splitting a global folder when
 its members belong to multiple repos. A legacy assignment with no logged repo
