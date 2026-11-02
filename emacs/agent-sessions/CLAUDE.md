@@ -417,7 +417,33 @@ folder is copied onto the child's terminal at its first hook, the same moment
 parentage is decided, and is then persisted like any other folder choice. It is
 a default, not a rule: it never overrides a folder already chosen for the
 terminal, never crosses repos, and is not re-applied later, so moving the child
-out of the folder sticks.
+out of the folder sticks. A top-level session `agent-launch` opens from a
+dashboard session (a plan opening its implementer at the user's request) gets
+the same default from its opener, set at spawn and persisted by the first hook,
+without being nested under it.
+**A repo heading is the tmux session started inside the repo, not the busiest.**
+The heading first took the tmux session most of the repo's agents ran in.
+Three stages of a customize-agents task opened from the Brain session then
+outnumbered the agents in the customize-agents session, and the heading read
+"Brain": three groups named Brain on one screen. `--entries-tmux-session`
+now prefers a session whose start directory (`--tmux-session-home`, the same
+cached lookup adoption uses) is in the repo, falling back to the count only
+when none is, and `+` on the heading follows the same choice. The heading
+shows the repo's own name when no session was started in it, and spells a
+session that is only the repo's name made tmux-safe as the repo (`.emacs.d`,
+not `-emacs-d`).
+**A non-git child is placed with its parent, not with its tmux session.** A
+review or exploration runs in its Plans folder, outside git. Grouping it by the
+repo its tmux session started in was right for a lone planner, but a child
+whose parent runs in another repo then landed in a different group from the
+parent: no nesting, and the folder could not be inherited because folders
+never cross repos. `--buffer-repo-info` now takes the repo fields from the
+live parent (found by agent session id) first, and falls back to the tmux
+session's start directory only without one; the tmux session's name stays the
+worktree label and the child's own directory the worktree path, so the session
+log still resumes it in the right place. The registry row carries the placement
+because folder inheritance and the session log both read it at the first hook,
+before the render-time adoption in `--adopt-tmux-entries` ever runs.
 
 **`Z` lays a repo out as REPO/<branch>/, and the name lives in git config.**
 `Z` (Magit's worktree key) adds a worktree for a branch at REPO/<branch>/,

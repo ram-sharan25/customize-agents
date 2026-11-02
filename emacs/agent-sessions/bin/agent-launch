@@ -14,7 +14,8 @@
 #                    claude: /NAME TASK      pi: /skill:NAME TASK
 #                  followed by the --brief file's text, when given
 #   --prompt-file  first prompt is this file's text, as is (explore briefs)
-#   --top          a session of its own (the default)
+#   --top          a session of its own (the default); opened from a dashboard
+#                  session, it starts in that session's dashboard folder
 #   --child        a child of the calling session (or of --parent): it gets
 #                  the parent's identity in its environment so it can report
 #                  back, and a dashboard row nested under the parent
@@ -253,14 +254,16 @@ elisp_esc() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
 elisp_unquote() { printf '%s' "$1" | sed -e 's/^"//' -e 's/"$//' -e 's/\\"/"/g' -e 's/\\\\/\\/g'; }
 open_through_emacs() {
   command -v emacsclient >/dev/null 2>&1 || return 1
-  child_parent=""; [ "$mode" = child ] && child_parent=$parent_id
-  # A top-level session started from an Emacs-tracked terminal is not nested.
+  child_parent=""; opener=""
+  # A top-level session started from an Emacs-tracked terminal is not nested;
+  # it only starts in the opener's dashboard folder.
+  if [ "$mode" = child ]; then child_parent=$parent_id; else opener=$parent_id; fi
   detached=nil; [ -n "$focus" ] || detached=t
   reply=$(emacsclient -e "(rsr/agent-sessions-launch-spawn \
 \"$(elisp_esc "$child_parent")\" \"$(elisp_esc "$session")\" \
 \"$(elisp_esc "$cwd")\" \"$(elisp_esc "$name")\" \"$(elisp_esc "$attach")\" \
 \"$(elisp_esc "$title")\" \"$(elisp_esc "$cmd")\" \"$(elisp_esc "$child_env")\" \
-$detached \"$(elisp_esc "${attach_label:-brief}")\")" 2>&1) || {
+$detached \"$(elisp_esc "${attach_label:-brief}")\" \"$(elisp_esc "$opener")\")" 2>&1) || {
     printf 'agent-launch: Emacs did not answer (%s); opening with plain tmux\n' "$reply" >&2
     return 1
   }

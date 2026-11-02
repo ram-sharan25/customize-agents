@@ -436,9 +436,66 @@ events that followed left it there for the rest of the turn."
           ;; The registry's own record is untouched.
           (should (equal (plist-get planner :worktree-path) "/plans/x/")))))))
 
+(ert-deftest rsr/agent-sessions-non-git-child-takes-its-parents-repo ()
+  "A tmux child outside git is placed in its live parent's repo, not in the
+repo its tmux session started in, so it can nest under the parent and share
+the parent's folder.  Without a live parent it groups by its tmux session."
+  (let* ((rsr/agent-sessions (make-hash-table :test 'equal))
+         (plans (file-name-as-directory (make-temp-file "plans-" t)))
+         (proxy (lambda ()
+                  (let ((buf (generate-new-buffer " *proxy*")))
+                    (with-current-buffer buf
+                      (setq major-mode 'rsr/agent-tmux-mode)
+                      (setq default-directory plans)
+                      (setq-local rsr/agent-tmux-session "Brain"))
+                    buf)))
+         (parent-buf (generate-new-buffer " *parent*"))
+         (child (funcall proxy))
+         (alone (funcall proxy))
+         (none (list :repo nil :repo-root nil :worktree nil :worktree-name nil
+                     :branch nil :worktree-path nil)))
+    (puthash "p" (list :buffer parent-buf :agent-session-id "parent-sid"
+                       :repo ".emacs.d" :repo-root "/code/emacs/"
+                       :worktree-name ".emacs.d" :branch "lean-fast"
+                       :worktree-path "/code/emacs/")
+             rsr/agent-sessions)
+    (with-current-buffer child
+      (setq-local rsr/agent-session--branched-from '("parent-sid" . "Plan")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'rsr/agent-session--repo-info)
+                   (lambda (_) none))
+                  ((symbol-function 'rsr/agent-tmux-session-path)
+                   (lambda (_) "/code/brain/")))
+          (let ((info (rsr/agent-sessions--buffer-repo-info child)))
+            (should (equal (plist-get info :repo-root) "/code/emacs/"))
+            (should (equal (plist-get info :repo) ".emacs.d"))
+            (should (equal (plist-get info :branch) "lean-fast"))
+            ;; Resume still knows the tmux session and the child's own folder.
+            (should (equal (plist-get info :worktree) "Brain"))
+            (should (equal (plist-get info :worktree-path)
+                           (rsr/agent-sessions--canonical-path plans)))
+            ;; And the render does not move it back to the tmux session's repo.
+            (should-not (rsr/agent-sessions--session-tmux-group
+                         (list :buffer child))))
+          (let ((info (rsr/agent-sessions--buffer-repo-info alone)))
+            (should (equal (plist-get info :repo-root) "/code/brain/"))
+            (should (equal (plist-get info :repo) "Brain"))
+            (should (equal (rsr/agent-sessions--session-tmux-group
+                            (list :buffer alone))
+                           "Brain")))
+          ;; A parent whose terminal is gone no longer places the child.
+          (kill-buffer parent-buf)
+          (should (equal (plist-get (rsr/agent-sessions--buffer-repo-info child)
+                                    :repo-root)
+                         "/code/brain/")))
+      (dolist (b (list parent-buf child alone))
+        (when (buffer-live-p b) (kill-buffer b))))))
+
 (ert-deftest rsr/agent-sessions-repo-is-named-after-its-tmux-session ()
-  "A repo's heading is the tmux session most of its agents run in, so a
-checkout folder called `main' does not name the project."
+  "A repo's heading is the tmux session started inside it, so a checkout
+folder called `main' does not name the project.  A session started in another
+repo never names this one, however many of its agents run there, and a
+session that is only the repo's name made tmux-safe is spelled as the repo."
   (rsr/agent-sessions-test--with-temp-db
     (let* ((rsr/agent-sessions-sort-by-activity nil)
            (proxy (lambda (tmux)
@@ -448,30 +505,55 @@ checkout folder called `main' does not name the project."
                         (setq-local rsr/agent-tmux-session tmux))
                       buf)))
            (a (funcall proxy "tina"))
-           (b (funcall proxy "tina"))
+           (b (funcall proxy "elsewhere"))
            (c (funcall proxy "elsewhere"))
+           (d (funcall proxy "-emacs-d"))
            (plain (generate-new-buffer " *plain*"))
-           (session (lambda (buf)
-                      (list :buffer buf :repo "main"
-                            :repo-root "/projects/tina/main/"
-                            :worktree-path "/projects/tina/main/")))
-           (entries (mapcar (lambda (buf)
-                              (list :id (buffer-name buf)
-                                    :session (funcall session buf)))
-                            (list a b c))))
+           (paths '(("tina" . "/projects/tina/main/")
+                    ("elsewhere" . "/projects/other/")
+                    ("-emacs-d" . "/home/me/.emacs.d/")))
+           (roots '(("/projects/tina/main/" . "/projects/tina/main/")
+                    ("/projects/other/" . "/projects/other/")
+                    ("/home/me/.emacs.d/" . "/home/me/.emacs.d/")))
+           (session (lambda (buf &optional repo root)
+                      (list :buffer buf :repo (or repo "main")
+                            :repo-root (or root "/projects/tina/main/")
+                            :worktree-path (or root "/projects/tina/main/"))))
+           (name (lambda (&rest entries)
+                   (plist-get (car (rsr/agent-sessions--build-tree entries)) :name)))
+           (entry (lambda (buf &optional repo root)
+                    (list :id (buffer-name buf)
+                          :session (funcall session buf repo root)))))
       (unwind-protect
-          (cl-letf (((symbol-function 'rsr/agent-sessions--tmux-home) #'ignore))
-            (should (equal (plist-get (car (rsr/agent-sessions--build-tree entries))
-                                      :name)
+          (cl-letf (((symbol-function 'rsr/agent-sessions--tmux-home) #'ignore)
+                    ((symbol-function 'rsr/agent-tmux-session-path)
+                     (lambda (tmux) (cdr (assoc tmux paths))))
+                    ((symbol-function 'rsr/agent-session--repo-info)
+                     (lambda (dir)
+                       (when-let ((root (cdr (assoc dir roots))))
+                         (list :repo (file-name-nondirectory
+                                      (directory-file-name root))
+                               :repo-root root)))))
+            (clrhash rsr/agent-sessions--tmux-home-cache)
+            ;; Started in the repo, it names it even when outnumbered.
+            (should (equal (funcall name (funcall entry a) (funcall entry b)
+                                    (funcall entry c))
                            "tina"))
+            ;; Started elsewhere, it does not; the repo's own name stands in.
+            (should (equal (funcall name (funcall entry b) (funcall entry c))
+                           "main"))
+            ;; The tmux spelling of the repo's own name reads as the repo.
+            (should (equal (funcall name (funcall entry d ".emacs.d"
+                                                  "/home/me/.emacs.d/"))
+                           ".emacs.d"))
             ;; With no agent in tmux, the checkout's own name stands in.
-            (should (equal (plist-get
-                            (car (rsr/agent-sessions--build-tree
-                                  (list (list :id "p"
-                                              :session (funcall session plain)))))
-                            :name)
-                           "main")))
-        (mapc #'kill-buffer (list a b c plain))))))
+            (should (equal (funcall name (funcall entry plain)) "main"))
+            ;; `+' on the heading still goes to the repo's own session.
+            (should (equal (rsr/agent-sessions--entries-tmux-session
+                            (list (funcall entry b) (funcall entry c)
+                                  (funcall entry a)))
+                           "tina")))
+        (mapc #'kill-buffer (list a b c d plain))))))
 
 (ert-deftest rsr/agent-sessions-folder-heading-names-the-shared-worktree ()
   "A row repeats its `@' label only when it differs from its folder's."
