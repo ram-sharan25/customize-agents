@@ -596,6 +596,93 @@
         (mapc #'kill-buffer (list terminal dashboard))
         (delete-directory root t)))))
 
+(ert-deftest rsr/folders-new-terminal-folder-worktree ()
+  "`+' on a folder takes its sessions' worktree, asking when they span several."
+  (rsr/folder-test-with-db
+    (let* ((root (make-temp-file "repo-fwt-" t))
+           (side (make-temp-file "repo-fwt-side-" t))
+           (repo (rsr/agent-sessions--canonical-path root))
+           (side-path (rsr/agent-sessions--canonical-path side))
+           (terminal (generate-new-buffer " *fwt-terminal*"))
+           (other (generate-new-buffer " *fwt-other*"))
+           (dashboard (generate-new-buffer " *fwt-dashboard*"))
+           (rsr/agent-sessions-icons nil)
+           (rsr/agent-sessions (make-hash-table :test 'equal))
+           (folder (rsr/agent-sessions--folder-create "Tasks" repo))
+           (worktrees (list (list :label "main" :path repo)
+                            (list :label "side (side)" :path side-path)))
+           (session (list :buffer terminal :repo "main" :repo-root root
+                          :worktree-name "main" :worktree-path root
+                          :agent-session-id "one"))
+           (session2 (list :buffer other :repo "main" :repo-root root
+                           :worktree-name "side" :worktree-path side
+                           :agent-session-id "two"))
+           (entries (list (list :id "one" :title "First" :session session)))
+           targets prompts)
+      (unwind-protect
+          (progn
+            (puthash "one" session rsr/agent-sessions)
+            (puthash "two" session2 rsr/agent-sessions)
+            (dolist (buf (list terminal other))
+              (with-current-buffer buf
+                (setq major-mode 'rsr/agent-tmux-mode
+                      rsr/agent-tmux-session "study")))
+            (rsr/agent-sessions--folder-set session (plist-get folder :id))
+            (rsr/agent-sessions--folder-set session2 (plist-get folder :id))
+            (with-current-buffer dashboard
+              (rsr/agent-sessions-mode)
+              (cl-letf (((symbol-function 'rsr/agent-sessions--live-entries)
+                         (lambda () entries))
+                        ((symbol-function 'rsr/agent-sessions--all-worktrees)
+                         (lambda (_) worktrees))
+                        ((symbol-function 'rsr/agent-sessions--tmux-session-home)
+                         (lambda (_) (list :repo "main" :repo-root repo)))
+                        ((symbol-function 'rsr/agent-sessions--create-terminal)
+                         (lambda (&rest _)
+                           (push rsr/agent-tmux--target targets)
+                           (generate-new-buffer " *fwt-created*")))
+                        ((symbol-function 'rsr/agent-sessions--folder-set)
+                         #'ignore)
+                        ((symbol-function 'completing-read)
+                         (lambda (prompt &rest _)
+                           (push prompt prompts) "side (side)"))
+                        ((symbol-function 'rsr/agent-sessions--refresh-if-visible)
+                         #'ignore)
+                        ((symbol-function 'rsr/agent-sessions--goto-terminal-row)
+                         #'ignore))
+                (cl-flet ((plus-on-folder (&optional ask)
+                            (rsr/agent-sessions--refresh)
+                            (goto-char (point-min))
+                            (re-search-forward "^  Tasks")
+                            (beginning-of-line)
+                            (rsr/agent-sessions-new-vterm ask))
+                          (last-dir ()
+                            (rsr/agent-sessions--canonical-path
+                             (cdr (car targets)))))
+                  ;; The folder's sessions share one worktree: taken, not asked.
+                  (plus-on-folder)
+                  (should (null prompts))
+                  (should (equal repo (last-dir)))
+                  ;; C-u asks anyway.
+                  (plus-on-folder t)
+                  (should (equal '("Worktree: ") prompts))
+                  (should (equal side-path (last-dir)))
+                  ;; Sessions in two worktrees: asked.
+                  (setq entries (list (list :id "one" :title "First"
+                                            :session session)
+                                      (list :id "two" :title "Second"
+                                            :session session2))
+                        prompts nil)
+                  (plus-on-folder)
+                  (should (equal '("Worktree: ") prompts))
+                  (should (equal side-path (last-dir)))))))
+        (dolist (buf (buffer-list))
+          (when (string-prefix-p " *fwt-created*" (buffer-name buf))
+            (kill-buffer buf)))
+        (mapc #'kill-buffer (list terminal other dashboard))
+        (delete-directory root t)
+        (delete-directory side t)))))
+
 (ert-deftest rsr/folders-tmux-agent-asks-folder-outside-dashboard ()
   "`C-c i i' away from the dashboard asks for a folder; in it, reads point."
   (rsr/folder-test-with-db

@@ -5267,36 +5267,60 @@ displays its own point, not the buffer's."
         (dolist (win (get-buffer-window-list dashboard nil t))
           (set-window-point win (point)))))))
 
-(defun rsr/agent-sessions--section-tmux-session (section)
-  "The tmux session the rows under SECTION run in, as its heading names it.
-Read from the rows rather than kept in the section's value, which is also
-its identity for the fold state a refresh restores."
-  (let (entries)
+(defun rsr/agent-sessions--section-sessions (section)
+  "The sessions of every row under SECTION, at any depth."
+  (let (sessions)
     (cl-labels ((walk (s)
                   (if (eq (oref s type) 'rsr/agent-session-row)
                       (when-let ((session (rsr/agent-sessions--session-for-id
                                            (oref s value))))
-                        (push (list :session session) entries))
+                        (push session sessions))
                     (mapc #'walk (oref s children)))))
       (walk section))
-    (rsr/agent-sessions--entries-tmux-session entries)))
+    (nreverse sessions)))
 
-(defun rsr/agent-sessions-new-vterm ()
+(defun rsr/agent-sessions--section-tmux-session (section)
+  "The tmux session the rows under SECTION run in, as its heading names it.
+Read from the rows rather than kept in the section's value, which is also
+its identity for the fold state a refresh restores."
+  (rsr/agent-sessions--entries-tmux-session
+   (mapcar (lambda (session) (list :session session))
+           (rsr/agent-sessions--section-sessions section))))
+
+(defun rsr/agent-sessions--section-worktrees (section worktrees)
+  "Those of WORKTREES that a row under SECTION runs in, in WORKTREES' order.
+A row outside every listed worktree (an agent outside git) counts for none."
+  (let ((paths (delete-dups
+                (mapcar (lambda (session)
+                          (rsr/agent-sessions--canonical-path
+                           (plist-get session :worktree-path)))
+                        (rsr/agent-sessions--section-sessions section)))))
+    (seq-filter (lambda (wt)
+                  (member (rsr/agent-sessions--canonical-path
+                           (plist-get wt :path))
+                          paths))
+                worktrees)))
+
+(defun rsr/agent-sessions-new-vterm (&optional ask)
   "Create a new vterm in the worktree at point.
 Leaves the dashboard's point on the new terminal's row, so the thing just
-created is what `k', `t', `e' and `n'/`p' act from.  On a repo or folder
-heading, choose among that repo's worktrees.  Where it lands comes from
-point; see `rsr/agent-sessions--new-terminal-at-point'."
-  (interactive)
-  (when-let ((buf (rsr/agent-sessions--new-terminal-at-point)))
+created is what `k', `t', `e' and `n'/`p' act from.  On a repo heading,
+choose among that repo's worktrees; on a folder heading, the worktree its
+sessions share, or a choice when they span several.  With a prefix argument
+ASK, always choose.  Where it lands comes from point; see
+`rsr/agent-sessions--new-terminal-at-point'."
+  (interactive "P")
+  (when-let ((buf (rsr/agent-sessions--new-terminal-at-point ask)))
     (rsr/agent-sessions--goto-terminal-row buf)))
 
-(defun rsr/agent-sessions--new-terminal-at-point ()
+(defun rsr/agent-sessions--new-terminal-at-point (&optional ask)
   "Open a terminal for the dashboard section at point; return it, or nil.
 The tmux window opens in the tmux session of the row at point, or else of the
 repo heading, rather than one asked for or derived from the checkout's folder
 name.  The terminal joins the folder of the row or folder heading at point;
-on a repo heading it asks which folder."
+on a repo heading it asks which folder.  The worktree is the row's; on a
+folder heading, the one its sessions share, asked for only when they span
+several or ASK is non-nil; on a repo heading, asked for when it has several."
   (let* ((row (rsr/agent-sessions--enclosing-section 'rsr/agent-session-row))
          (row-session (and row (rsr/agent-sessions--session-for-id
                                 (oref row value))))
@@ -5317,8 +5341,13 @@ on a repo heading it asks which folder."
                                  repo-section))))
          (worktrees (and (not row) repo-root
                          (rsr/agent-sessions--all-worktrees repo-root)))
+         (folder-worktrees (and folder-section worktrees (not ask)
+                                (rsr/agent-sessions--section-worktrees
+                                 folder-section worktrees)))
          (selected (cond ((null worktrees) nil)
                          ((= (length worktrees) 1) (car worktrees))
+                         ((= (length folder-worktrees) 1)
+                          (car folder-worktrees))
                          (t (let* ((labels (mapcar (lambda (wt)
                                                      (plist-get wt :label))
                                                    worktrees))

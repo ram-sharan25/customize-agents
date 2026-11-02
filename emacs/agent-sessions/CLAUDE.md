@@ -391,7 +391,13 @@ visibility cache records it, so a hook-driven render must not reapply the
 global Shift+TAB level over those individual choices.
 `+` places the new terminal from point instead of asking: on a row it joins
 that row's folder and tmux session, on a folder heading that folder, and on a
-repo heading it asks only for the folder (the same picker as `F`). The tmux
+repo heading it asks only for the folder (the same picker as `F`). The
+worktree follows the same idea: a row's own; on a folder heading the one its
+sessions share, asked for only when they span several (a folder in a
+multi-worktree repo asked every time before, though its rows already said);
+on a repo heading asked for when it has several. `C-u +` asks on a folder
+regardless, the way out when a single-worktree folder should get a session
+in another checkout. The tmux
 session is the one the heading names, read from its rows at `+` time rather
 than stored in the repo section's value, because that value is the section's
 identity for restored fold state. Without it `rsr/agent-tmux-target` asks
