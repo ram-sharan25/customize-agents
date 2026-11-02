@@ -638,3 +638,54 @@
         (delete-directory root t)))))
 
 ;;; agent-sessions-folder-test.el ends here
+
+(ert-deftest rsr/folders-repo-list-creates-dims-and-deletes ()
+  "`F' on a repo heading lists every folder; C-k deletes, the new entry creates."
+  (rsr/folder-test-with-db
+    (let* ((root (make-temp-file "repo-folder-list-" t))
+           (terminal (generate-new-buffer " *folder-list-terminal*"))
+           (dashboard (generate-new-buffer " *folder-list-dashboard*"))
+           (rsr/agent-sessions (make-hash-table :test 'equal))
+           (session (list :buffer terminal :repo-root root :worktree-path root
+                          :agent-session-id "live"))
+           (entries (list (list :id "live" :title "Working" :session session)))
+           seen answers)
+      (unwind-protect
+          (let* ((repo (rsr/agent-sessions--canonical-path root))
+                 (busy (rsr/agent-sessions--folder-create "Busy" repo))
+                 (_stale (rsr/agent-sessions--folder-create "Stale" repo)))
+            (rsr/agent-sessions--folder-set session (plist-get busy :id))
+            (with-current-buffer dashboard
+              (rsr/agent-sessions-mode)
+              (let ((inhibit-read-only t))
+                (magit-insert-section (rsr/agent-sessions-root)
+                  (magit-insert-section (rsr/agent-session-repo
+                                         (list :name "demo" :root root))
+                    (magit-insert-heading "demo\n"))))
+              (goto-char (point-min))
+              ;; First pass: C-k on Stale.  Second pass: RET on the new entry.
+              (setq answers (list (lambda () (throw 'rsr/agent-sessions--folder-list
+                                                    (cons 'delete "Stale")))
+                                  (lambda () rsr/agent-sessions--new-folder-candidate)))
+              (cl-letf (((symbol-function 'rsr/agent-sessions--live-entries)
+                         (lambda () entries))
+                        ((symbol-function 'completing-read)
+                         (lambda (_prompt candidates &rest _)
+                           (push candidates seen)
+                           (funcall (pop answers))))
+                        ((symbol-function 'read-string) (lambda (&rest _) "Fresh"))
+                        ((symbol-function 'y-or-n-p) (lambda (&rest _) t))
+                        ((symbol-function 'rsr/agent-sessions--refresh) #'ignore))
+                (rsr/agent-sessions-folder-action))
+              (let ((first (car (last seen))))
+                (should (equal (list rsr/agent-sessions--new-folder-candidate
+                                     "Busy" "Stale")
+                               (mapcar #'substring-no-properties first)))
+                (should-not (get-text-property 0 'face (nth 1 first)))
+                (should (eq 'shadow (get-text-property 0 'face (nth 2 first)))))
+              (should (equal '("Busy" "Fresh")
+                             (sort (mapcar (lambda (f) (plist-get f :name))
+                                           (rsr/agent-sessions--folders-for-repo repo))
+                                   #'string-lessp)))))
+        (mapc #'kill-buffer (list terminal dashboard))
+        (delete-directory root t)))))

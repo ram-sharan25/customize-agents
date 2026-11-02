@@ -4987,10 +4987,33 @@ them, a cycle is a poor way to reach a particular one."
 
 ;; Shared by `F' and `+', so moving a session and placing a new one offer the
 ;; same choices.
+(defun rsr/agent-sessions--folder-occupancy (folders)
+  "Return an alist of FOLDERS' names to their live session counts."
+  (let ((entries (rsr/agent-sessions--live-entries)))
+    (mapcar (lambda (folder)
+              (cons (plist-get folder :name)
+                    (length (rsr/agent-sessions--folder-entries folder entries))))
+            folders)))
+
+(defun rsr/agent-sessions--folder-annotation (occupancy)
+  "Return a completion annotation function reading counts from OCCUPANCY."
+  (lambda (name)
+    (when-let ((cell (assoc name occupancy)))
+      (propertize (pcase (cdr cell)
+                    (0 "  empty")
+                    (1 "  1 session")
+                    (n (format "  %d sessions" n)))
+                  'face 'completions-annotations))))
+
 (defun rsr/agent-sessions--read-folder (repo prompt)
   "Read one of REPO's folders with PROMPT; return it, or nil for \"No folder\".
-A name matching no folder creates one in REPO."
+A name matching no folder creates one in REPO.  Each folder is annotated with
+its live session count, `empty' for none, as the dashboard hides those."
   (let* ((folders (rsr/agent-sessions--folders-for-repo repo))
+         (completion-extra-properties
+          (list :annotation-function
+                (rsr/agent-sessions--folder-annotation
+                 (rsr/agent-sessions--folder-occupancy folders))))
          (choice (completing-read
                   prompt
                   (append (mapcar (lambda (item) (plist-get item :name)) folders)
@@ -5003,8 +5026,110 @@ A name matching no folder creates one in REPO."
                            folders)
                  (rsr/agent-sessions--folder-create choice repo))))))
 
+(defconst rsr/agent-sessions--new-folder-candidate "+ New folder"
+  "The first entry of a repo's folder list, which creates a folder.")
+
+(defvar rsr/agent-sessions-folder-list-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-k") #'rsr/agent-sessions-folder-list-delete)
+    map)
+  "Keys added to the minibuffer while a repo's folder list is open.")
+
+(defun rsr/agent-sessions-folder-list-delete ()
+  "Leave the folder list to delete the folder highlighted in it."
+  (interactive)
+  (throw 'rsr/agent-sessions--folder-list
+         (cons 'delete (if (fboundp 'vertico--candidate)
+                           (vertico--candidate)
+                         (minibuffer-contents)))))
+
+(defun rsr/agent-sessions--folder-list-read (repo-name folders)
+  "Show REPO-NAME's FOLDERS with a new-folder entry first; return the choice.
+The value is (select . NAME) for RET and (delete . NAME) for \\<rsr/agent-sessions-folder-list-map>\\[rsr/agent-sessions-folder-list-delete].
+Folders no live session is in are dimmed, since the dashboard hides them."
+  (let* ((occupancy (rsr/agent-sessions--folder-occupancy folders))
+         (candidates
+          (cons rsr/agent-sessions--new-folder-candidate
+                (mapcar (lambda (cell)
+                          (if (zerop (cdr cell))
+                              (propertize (car cell) 'face 'shadow)
+                            (car cell)))
+                        occupancy)))
+         (completion-extra-properties
+          (list :annotation-function
+                (rsr/agent-sessions--folder-annotation occupancy)
+                :display-sort-function #'identity
+                :cycle-sort-function #'identity)))
+    (catch 'rsr/agent-sessions--folder-list
+      (minibuffer-with-setup-hook
+          (lambda ()
+            (use-local-map (make-composed-keymap rsr/agent-sessions-folder-list-map
+                                                 (current-local-map))))
+        (cons 'select
+              (completing-read
+               (format "Folders of %s (%s delete): " repo-name
+                       (substitute-command-keys
+                        "\\<rsr/agent-sessions-folder-list-map>\\[rsr/agent-sessions-folder-list-delete]"))
+               candidates nil t))))))
+
+(defun rsr/agent-sessions--folder-list (repo repo-name)
+  "Manage REPO's folders from one list: create one, or rename and delete them.
+The list shows every folder, the empty ones dimmed; deleting returns to it so
+several can be cleaned up in a row.  Return non-nil when anything changed."
+  (let (changed done)
+    (while (not done)
+      (let* ((folders (sort (copy-sequence (rsr/agent-sessions--folders-for-repo repo))
+                            (lambda (a b)
+                              (string-lessp (plist-get a :name)
+                                            (plist-get b :name)))))
+             (choice (rsr/agent-sessions--folder-list-read repo-name folders))
+             (name (substring-no-properties (or (cdr choice) "")))
+             (folder (seq-find (lambda (item)
+                                 (string-equal-ignore-case name (plist-get item :name)))
+                               folders)))
+        (cond
+         ((equal name rsr/agent-sessions--new-folder-candidate)
+          (if (eq (car choice) 'delete)
+              (message "Highlight a folder to delete")
+            (rsr/agent-sessions--folder-create (read-string "New folder name: ") repo)
+            (setq changed t done t)))
+         ((null folder)
+          (when (eq (car choice) 'select) (setq done t)))
+         ((eq (car choice) 'delete)
+          (when (rsr/agent-sessions--folder-confirm-delete folder)
+            (setq changed t)
+            (unless (rsr/agent-sessions--folders-for-repo repo) (setq done t))))
+         (t
+          (pcase (completing-read (format "%s: " (plist-get folder :name))
+                                  '("Rename folder" "Delete folder") nil t)
+            ("Rename folder"
+             (rsr/agent-sessions--folder-rename
+              folder (read-string "Folder name: " (plist-get folder :name)))
+             (setq changed t done t))
+            ("Delete folder"
+             (when (rsr/agent-sessions--folder-confirm-delete folder)
+               (setq changed t)
+               (unless (rsr/agent-sessions--folders-for-repo repo)
+                 (setq done t)))))))))
+    changed))
+
+(defun rsr/agent-sessions--folder-confirm-delete (folder)
+  "Ask, then delete FOLDER; return non-nil when it was deleted."
+  (let ((members (seq-count (lambda (cell) (> (cdr cell) 0))
+                            (rsr/agent-sessions--folder-occupancy (list folder)))))
+    (when (y-or-n-p
+           (format (if (zerop members)
+                       "Delete folder %s? "
+                     "Delete folder %s and unassign its sessions? ")
+                   (plist-get folder :name)))
+      (rsr/agent-sessions--folder-delete folder)
+      t)))
+
 (defun rsr/agent-sessions-folder-action ()
-  "Move the session at point, manage a folder heading, or create a folder."
+  "Move the session at point, manage a folder heading, or list a repo's folders.
+On a repo heading the list has every folder, the empty ones the dashboard
+hides dimmed, with a new-folder entry first; see
+`rsr/agent-sessions--folder-list'."
   (interactive)
   (rsr/agent-sessions--load-folders)
   (let* ((row (rsr/agent-sessions--enclosing-section 'rsr/agent-session-row))
@@ -5040,15 +5165,13 @@ A name matching no folder creates one in REPO."
           folder (read-string "Folder name: " (plist-get folder :name)))
          (rsr/agent-sessions--refresh))
         ("Delete folder"
-         (when (y-or-n-p
-                (format "Delete folder %s and unassign its sessions? "
-                        (plist-get folder :name)))
-           (rsr/agent-sessions--folder-delete folder)
+         (when (rsr/agent-sessions--folder-confirm-delete folder)
            (rsr/agent-sessions--refresh)))))
      (t
-      (unless repo (user-error "Select a repo to create a folder"))
-      (rsr/agent-sessions--folder-create (read-string "New folder name: ") repo)
-      (rsr/agent-sessions--refresh)))))
+      (unless repo (user-error "Select a repo to manage its folders"))
+      (when (rsr/agent-sessions--folder-list
+             repo (plist-get (oref repo-section value) :name))
+        (rsr/agent-sessions--refresh))))))
 
 (defun rsr/agent-sessions--terminal-open (dir bufname)
   "Open the configured terminal in DIR in another window; return the buffer.
