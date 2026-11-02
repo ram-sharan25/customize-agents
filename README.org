@@ -9,6 +9,7 @@ Everything that customizes my coding agents (Claude Code, Pi, Codex), in one pla
 | =skills/=               | Agent skills; =install.sh= links each one into every harness.    |
 | =skills/explore-session/= | Spin a tangent off into a child session in a new tmux window (brief by default, fork on request) and bring a short summary back; shared scripts, plus =extensions/pi/explore-session.ts= for Pi. |
 | =skills/{clarify-requirements,review-requirements,plan-implementation,review-plan,implement-plan,review-implementation}/= | The planning workflow's stages, one skill each, in that order; =fix-bug/= is its bug-fix child, =issue-workflow/= runs the stages in one session. |
+| =skills/carve-work/= | Breaks one piece of work into 90-minute sittings before any Org task exists, the user answering first; shows the Org text and writes it to the Brain only on the user's word. |
 | =emacs/agent-sessions/= | Emacs dashboard for agent sessions, its hook scripts and =bin/= commands (=emacs-share=, =emacs-agent=, and =agent-launch=, the core launcher every workflow session and child goes through). |
 | =emacs/agent-sessions/agent-workflow.el= | The workflow's Emacs keys: =C-c i w= (bound in =~/.emacs.d=), dashboard =c=, =y=, =o=. |
 | =emacs/test-bed/=       | Isolated Emacs for trying agent-sessions (=--init-directory=).   |
