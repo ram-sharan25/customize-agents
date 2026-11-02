@@ -8338,11 +8338,12 @@ round-trip lossless."
 
 (defun rsr/agent-sessions--our-group-p (group script)
   "Non-nil if hook GROUP runs our SCRIPT (matched by basename)."
-  (let ((cmds (and (hash-table-p group) (gethash "hooks" group))))
+  (let ((cmds (and (hash-table-p group) (gethash "hooks" group)))
+        (name (regexp-quote (file-name-nondirectory script))))
     (and (vectorp cmds)
          (seq-some (lambda (h)
                      (let ((c (and (hash-table-p h) (gethash "command" h))))
-                       (and (stringp c) (string-match-p (regexp-quote script) c))))
+                       (and (stringp c) (string-match-p name c))))
                    cmds))))
 
 (defun rsr/agent-sessions--make-group (script matcher)
