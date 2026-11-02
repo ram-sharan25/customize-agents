@@ -1089,6 +1089,26 @@ shown the tmux session)."
       (should-not (seq-find (lambda (a) (string-prefix-p "EMACS_AGENT_PARENT=" a)) argv))
       (should-not (buffer-local-value 'rsr/agent-session--branched-from child)))))
 
+(ert-deftest rsr/agent-tmux-launch-spawn-top-level-starts-in-openers-folder ()
+  "A top-level session opened from a dashboard session takes that session's
+folder as its default, and is still not nested under it."
+  (rsr/agent-tmux-test--with-explore
+    (cl-letf (((symbol-function 'rsr/agent-sessions--folder-for-session)
+               (lambda (session) (and (eq (plist-get session :buffer) parent) 7))))
+      (let* ((reply (rsr/agent-sessions-launch-spawn
+                     "" "study" dir "implement-plan" "" "" "claude" ""
+                     nil "brief" parent-id))
+             (argv (caar (last (rsr/agent-tmux-test--called "new-window"))))
+             (child (seq-find (lambda (b)
+                                (equal (buffer-local-value 'rsr/agent-tmux-window b)
+                                       "@12"))
+                              (rsr/agent-tmux-proxies))))
+        (should (string-prefix-p "Opened @12 " reply))
+        (should-not (seq-find (lambda (a) (string-prefix-p "EMACS_AGENT_PARENT=" a))
+                              argv))
+        (should-not (buffer-local-value 'rsr/agent-session--branched-from child))
+        (should (equal (buffer-local-value 'rsr/agent-session--folder-id child) 7))))))
+
 (ert-deftest rsr/agent-tmux-launch-spawn-refuses-bad-requests ()
   (rsr/agent-tmux-test--with-explore
     (should (string-prefix-p

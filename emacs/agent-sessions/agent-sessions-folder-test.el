@@ -559,6 +559,9 @@
                          (lambda () entries))
                         ((symbol-function 'rsr/agent-sessions--all-worktrees)
                          #'ignore)
+                        ;; The study session was started in this repo.
+                        ((symbol-function 'rsr/agent-sessions--tmux-session-home)
+                         (lambda (_) (list :repo "main" :repo-root repo)))
                         ((symbol-function 'rsr/agent-sessions--create-terminal)
                          (lambda (&rest _)
                            (push rsr/agent-tmux--target targets)

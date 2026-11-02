@@ -851,12 +851,27 @@ to the terminal that actually owns the event."
 Computing repo info shells out to git, so cache it per buffer and only
 recompute when the buffer's `default-directory' changes (e.g. after a `cd').")
 
+(defun rsr/agent-sessions--parent-home (buf)
+  "The live session BUF was opened under, when it is placed in a repo, or nil.
+BUF's recorded parent (`rsr/agent-session--branched-from') is looked up by
+its agent session id, so a parent whose terminal is gone does not count."
+  (when-let* ((parent-sid (car (buffer-local-value
+                                'rsr/agent-session--branched-from buf)))
+              (parent (rsr/agent-sessions--session-for-agent-id parent-sid))
+              ((plist-get parent :repo-root)))
+    parent))
+
 (defun rsr/agent-sessions--buffer-repo-info (buf)
   "Return `rsr/agent-session--repo-info' for BUF, cached on its directory.
-A tmux proxy outside any git repository is grouped by its tmux session
-instead: the session's name stands in for the repo name and for the worktree
-label (which the session log keeps, so a resume knows the session), and the
-session's start directory for the repo root."
+A tmux proxy outside any git repository takes its place from elsewhere.  A
+child (a review in its Plans folder, say) belongs with its parent, so it
+carries the parent's repo and worktree: that is where its folder is, and the
+only group it can nest under the parent in, whichever tmux session either
+runs in.  Any other such proxy is grouped by its tmux session: the session's
+name stands in for the repo name and the session's start directory for the
+repo root.  Either way the tmux session's name is the worktree label (which
+the session log keeps, so a resume knows the session) and the proxy's own
+directory the worktree path (which the log keeps as the place to resume in)."
   (with-current-buffer buf
     (let* ((dir default-directory)
            (info (if (and rsr/agent-sessions--repo-info-cache
@@ -865,15 +880,24 @@ session's start directory for the repo root."
                    (cdr (setq rsr/agent-sessions--repo-info-cache
                               (cons dir (rsr/agent-session--repo-info dir)))))))
       (if (and (null (plist-get info :repo)) (rsr/agent-tmux-proxy-p buf))
-          (let ((session rsr/agent-tmux-session))
-            (list :repo session
-                  :tmux-session session
-                  :repo-root (or (rsr/agent-tmux-session-path session)
-                                 (rsr/agent-sessions--canonical-path dir))
-                  :worktree session
-                  :worktree-name session
-                  :branch nil
-                  :worktree-path (rsr/agent-sessions--canonical-path dir)))
+          (let ((session rsr/agent-tmux-session)
+                (parent (rsr/agent-sessions--parent-home buf)))
+            (if parent
+                (list :repo (plist-get parent :repo)
+                      :repo-root (plist-get parent :repo-root)
+                      :worktree session
+                      :worktree-name (rsr/agent-sessions--session-worktree-name
+                                      parent)
+                      :branch (rsr/agent-sessions--session-branch parent)
+                      :worktree-path (rsr/agent-sessions--canonical-path dir))
+              (list :repo session
+                    :tmux-session session
+                    :repo-root (or (rsr/agent-tmux-session-path session)
+                                   (rsr/agent-sessions--canonical-path dir))
+                    :worktree session
+                    :worktree-name session
+                    :branch nil
+                    :worktree-path (rsr/agent-sessions--canonical-path dir))))
         info))))
 
 (defun rsr/agent-sessions--session-tmux-group (session)
@@ -894,17 +918,21 @@ Cleared by `g'.")
   '(:repo :repo-root :worktree :worktree-name :branch :worktree-path)
   "The session fields that place it under a repo and worktree.")
 
+(defun rsr/agent-sessions--tmux-session-home (tmux)
+  "Repo info for the git checkout the tmux session TMUX was started in, or nil."
+  (when-let ((dir (rsr/agent-tmux-session-path tmux)))
+    (let ((info (or (gethash dir rsr/agent-sessions--tmux-home-cache)
+                    (puthash dir (or (rsr/agent-session--repo-info dir) 'none)
+                             rsr/agent-sessions--tmux-home-cache))))
+      (and (listp info) (plist-get info :repo) info))))
+
 (defun rsr/agent-sessions--tmux-home (session)
   "Repo info for the git checkout SESSION's tmux session was started in, or nil.
 An agent outside git in a tmux session started inside a repo (a planning agent
 in a Plans folder, say) belongs with that repo's agents, not in a group of its
 own beside them."
-  (when-let* ((tmux (rsr/agent-sessions--session-tmux-group session))
-              (dir (rsr/agent-tmux-session-path tmux)))
-    (let ((info (or (gethash dir rsr/agent-sessions--tmux-home-cache)
-                    (puthash dir (or (rsr/agent-session--repo-info dir) 'none)
-                             rsr/agent-sessions--tmux-home-cache))))
-      (and (listp info) (plist-get info :repo) info))))
+  (when-let ((tmux (rsr/agent-sessions--session-tmux-group session)))
+    (rsr/agent-sessions--tmux-session-home tmux)))
 
 (defun rsr/agent-sessions--adopt-tmux-entries (entries)
   "ENTRIES, with each tmux agent outside git placed in its tmux session's repo.
@@ -3894,11 +3922,16 @@ same path under another session by magit's parent chain."
     (rsr/agent-sessions--insert-file file indent)))
 
 (defun rsr/agent-sessions--entries-tmux-session (entries)
-  "The tmux session most of ENTRIES run in, or nil when none runs in tmux.
-Each repository is meant to have one tmux session, named by the user, so that
-name is what its heading shows.  Counting rather than taking the first agent's
-keeps one stray agent launched from elsewhere from renaming the repo."
-  (let (counts)
+  "The tmux session of the repo ENTRIES belong to, or nil when none runs in tmux.
+Each repository is meant to have one tmux session, named by the user and
+started inside it, so a session started in the repo wins.  Agents of one repo
+are often launched from another repo's session (a plan opening its implementer
+from where the user happened to be), and before this they renamed the repo as
+soon as they outnumbered its own agents.  Without a session started in the
+repo, the one most of ENTRIES run in stands in."
+  (let ((root (and entries (rsr/agent-sessions--session-repo
+                            (plist-get (car entries) :session))))
+        counts)
     (dolist (e entries)
       (let ((buf (plist-get (plist-get e :session) :buffer)))
         (when-let* (((buffer-live-p buf))
@@ -3906,7 +3939,34 @@ keeps one stray agent launched from elsewhere from renaming the repo."
                     (name (buffer-local-value 'rsr/agent-tmux-session buf)))
           (setf (alist-get name counts 0 nil #'equal)
                 (1+ (alist-get name counts 0 nil #'equal))))))
-    (car (car (sort counts (lambda (a b) (> (cdr a) (cdr b))))))))
+    (setq counts (sort counts (lambda (a b) (> (cdr a) (cdr b)))))
+    (or (and root
+             (car (seq-find (lambda (count)
+                              (equal (plist-get (rsr/agent-sessions--tmux-session-home
+                                                 (car count))
+                                                :repo-root)
+                                     root))
+                            counts)))
+        (car (car counts)))))
+
+(defun rsr/agent-sessions--repo-heading-name (entries)
+  "The name the heading of the repo ENTRIES belong to shows.
+The tmux session started in the repo, when one of ENTRIES runs in it: the
+user's name for the project, where a checkout folder may be called `main'.
+Spelled as the repo when the session's name is only the repo's made safe for
+tmux (`.emacs.d' for `-emacs-d').  A session started in another repo does not
+name this one; the repo's own name does."
+  (let* ((session (plist-get (car entries) :session))
+         (repo (plist-get session :repo))
+         (root (rsr/agent-sessions--session-repo session))
+         (tmux (rsr/agent-sessions--entries-tmux-session entries))
+         (home (and tmux (rsr/agent-sessions--tmux-session-home tmux))))
+    (cond
+     ((and tmux root (equal (plist-get home :repo-root) root))
+      (if (and repo (equal tmux (rsr/agent-tmux-session-name repo))) repo tmux))
+     (repo)
+     (tmux)
+     (t "?"))))
 
 (defun rsr/agent-sessions--shared-at-label (entries)
   "The `@' label most of ENTRIES share, or nil when ENTRIES is empty.
@@ -3941,18 +4001,17 @@ its folder's, or for a row in no folder, its repo's."
             entries)))
 
 (defun rsr/agent-sessions--build-tree (entries)
-  "Group live ENTRIES into repos, each named after its agents' tmux session.
-The tmux session is the user's name for the repository; the git checkout's
-folder name is only the fallback, since with worktrees kept together inside
-a project folder the main checkout is often called `main'.  An agent outside
+  "Group live ENTRIES into repos, each named by `--repo-heading-name'.
+The tmux session started in the repository is the user's name for it; the
+git checkout's folder name is the fallback, since with worktrees kept together
+inside a project folder the main checkout is often called `main'.  An agent outside
 any git repository joins the repo its tmux session was started in (see
 `rsr/agent-sessions--tmux-home')."
   (let* ((repos
           (mapcar
            (lambda (rentries)
              (let ((session (plist-get (car rentries) :session)))
-               (list :name (or (rsr/agent-sessions--entries-tmux-session rentries)
-                               (plist-get session :repo) "?")
+               (list :name (rsr/agent-sessions--repo-heading-name rentries)
                      :root (rsr/agent-sessions--session-repo session)
                      :entries (rsr/agent-sessions--label-entries rentries))))
            (mapcar #'cdr
@@ -7232,7 +7291,7 @@ stray worktree or branch behind."
 
 (defun rsr/agent-sessions-launch-spawn (parent-id session cwd name attach title
                                                   command env &optional detached
-                                                  attach-label)
+                                                  attach-label opener-id)
   "Open a session window for `agent-launch' and type COMMAND into it.
 The launcher (`bin/agent-launch', used by the workflow stage keys, review and
 bug-fix children, and explore-session) calls this over emacsclient so the new
@@ -7250,10 +7309,15 @@ file to show under the new row (labelled ATTACH-LABEL, default \"brief\"),
 TITLE the row's title, COMMAND the shell line that starts the agent and ENV
 its extra `VAR=VALUE' entries, one per line.  DETACHED non-nil leaves the
 current tmux window selected.  Emacs's own window layout is never rearranged.
+OPENER-ID is the terminal a top-level session was opened from, when it was
+opened from a dashboard session: the new session starts in that session's
+folder, as a fork starts in its parent's, without being nested under it.
 Returns \"Opened WINDOW TERMINAL-ID\" on success; failures are returned as
 text because emacsclient's printed value is the script's only channel back."
   (let* ((parent-id (and parent-id (not (string-empty-p parent-id)) parent-id))
          (parent (and parent-id (rsr/agent-sessions--session-for-id parent-id)))
+         (opener (and opener-id (not (string-empty-p opener-id)) (null parent)
+                      (rsr/agent-sessions--session-for-id opener-id)))
          (session (and session (not (string-empty-p session)) session))
          (cwd (and cwd (not (string-empty-p cwd))
                    (file-name-as-directory (expand-file-name cwd))))
@@ -7295,6 +7359,13 @@ text because emacsclient's printed value is the script's only channel back."
                 (setq-local rsr/agent-session--branched-from
                             (cons parent-sid
                                   (rsr/agent-sessions--session-short-label parent))))
+              ;; The opener's folder is a default the first hook persists
+              ;; (`rsr/agent-sessions--folder-hydrate') only when the new
+              ;; session lands in the folder's repo.
+              (when-let* ((folder (and opener
+                                       (rsr/agent-sessions--folder-for-session
+                                        opener))))
+                (setq-local rsr/agent-session--folder-id folder))
               (when title
                 (setq-local rsr/agent-session-title-override title)))
             ;; The brief is what the session was told; it belongs under its

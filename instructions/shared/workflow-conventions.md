@@ -233,11 +233,31 @@ open, and what the user decides next. When the next step is the user's (a
 review to read, a finalization to give), say that and still print the `next:`
 line for the step after it.
 
+## Opening the next stage for the user
+
+A stage never starts the next one on its own; the user does, with the `next:`
+line. When the user asks this session to open it ("open a session to implement
+this plan"), open it top-level through the launcher, in the task folder:
+
+```sh
+agent-launch --top --skill <skill> --task <task folder> \
+  --title "<skill>: <task name>" --no-focus
+```
+
+Do not pass `--cwd`. The launcher opens the session in the task folder, where
+the dashboard's own `C-c i w` keys open it, and the dashboard then files it
+with this session: in the same repo group and in this session's folder. A
+`--cwd` taken from `#+implementation-repository:` moves the row to that
+repository's group, away from the plan it implements, and tells the dashboard
+nothing the documents do not already say. When the gate the user is skipping
+has not been given (a review child still open, a document below `FINAL`),
+record the bypass in the task document, in the user's words, before opening.
+
 ## Never close the session
 
 A finished stage stays open at its waiting state. No skill exits, closes, or
-kills its own session or terminal, and no skill starts the next stage. The
-user closes sessions when they choose.
+kills its own session or terminal, and no skill starts the next stage on its
+own. The user closes sessions when they choose.
 
 The git boundary in `core.md` holds in every stage: never commit, push, reset,
 rebase, or open a PR; stage with `git add` and propose a commit message
