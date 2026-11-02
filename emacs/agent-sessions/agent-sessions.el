@@ -8207,7 +8207,18 @@ An explicit `rsr/agent-sessions-worktree-agent' overrides the normal command."
     (message "Worktree %s on %s" (abbreviate-file-name path) (car added))
     buf))
 
+(defun rsr/agent-sessions-describe-mode ()
+  "Show the dashboard's help in the window beside it.
+`describe-mode' uses `display-buffer''s default, which splits the window
+beside the side-window dashboard; replace it instead, as opening a session
+does.  `q' in the help puts the window's previous buffer back."
+  (interactive)
+  (let ((display-buffer-overriding-action rsr/agent-tmux-other-window-action))
+    (describe-mode)))
+
 (define-key rsr/agent-sessions-mode-map (kbd "RET") #'rsr/agent-sessions-jump)
+(define-key rsr/agent-sessions-mode-map (kbd "?") #'rsr/agent-sessions-describe-mode)
+(define-key rsr/agent-sessions-mode-map (kbd "h") #'rsr/agent-sessions-describe-mode)
 ;; `o' is "other window", as in dired, ibuffer and occur.
 (define-key rsr/agent-sessions-mode-map (kbd "o") #'rsr/agent-sessions-jump-other-window)
 (define-key rsr/agent-sessions-mode-map (kbd "d") #'rsr/agent-sessions-show-file-diff)
