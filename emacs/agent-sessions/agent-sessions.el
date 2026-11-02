@@ -4996,14 +4996,19 @@ them, a cycle is a poor way to reach a particular one."
             folders)))
 
 (defun rsr/agent-sessions--folder-annotation (occupancy)
-  "Return a completion annotation function reading counts from OCCUPANCY."
-  (lambda (name)
-    (when-let ((cell (assoc name occupancy)))
-      (propertize (pcase (cdr cell)
-                    (0 "  empty")
-                    (1 "  1 session")
-                    (n (format "  %d sessions" n)))
-                  'face 'completions-annotations))))
+  "Return a completion annotation function reading counts from OCCUPANCY.
+`apply-partially', not a `lambda': this file is dynamically bound, so a lambda
+would not keep OCCUPANCY once this returns, and the minibuffer calls it later."
+  (apply-partially #'rsr/agent-sessions--folder-annotate occupancy))
+
+(defun rsr/agent-sessions--folder-annotate (occupancy name)
+  "The annotation for folder NAME: its live session count from OCCUPANCY."
+  (when-let ((cell (assoc name occupancy)))
+    (propertize (pcase (cdr cell)
+                  (0 "  empty")
+                  (1 "  1 session")
+                  (n (format "  %d sessions" n)))
+                'face 'completions-annotations)))
 
 (defun rsr/agent-sessions--read-folder (repo prompt)
   "Read one of REPO's folders with PROMPT; return it, or nil for \"No folder\".

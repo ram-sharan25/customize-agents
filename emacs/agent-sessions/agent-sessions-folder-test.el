@@ -776,3 +776,40 @@
                                    #'string-lessp)))))
         (mapc #'kill-buffer (list terminal dashboard))
         (delete-directory root t)))))
+
+(ert-deftest rsr/folders-move-picker-annotates-counts ()
+  "The move picker's annotations still read the counts once it has returned.
+This file is lexically bound but agent-sessions.el is not, so a lambda there
+lost the counts and every redraw signalled `void-variable occupancy'."
+  (rsr/folder-test-with-db
+    (let* ((root (make-temp-file "repo-folder-move-" t))
+           (terminal (generate-new-buffer " *folder-move-terminal*"))
+           (session (list :buffer terminal :repo-root root :worktree-path root
+                          :agent-session-id "live"))
+           (entries (list (list :id "live" :title "Working" :session session)))
+           annotations)
+      (unwind-protect
+          (let* ((repo (rsr/agent-sessions--canonical-path root))
+                 (busy (rsr/agent-sessions--folder-create "Busy" repo)))
+            (rsr/agent-sessions--folder-create "Stale" repo)
+            (rsr/agent-sessions--folder-set session (plist-get busy :id))
+            (cl-letf (((symbol-function 'rsr/agent-sessions--live-entries)
+                       (lambda () entries))
+                      ((symbol-function 'completing-read)
+                       (lambda (_prompt candidates &rest _)
+                         (let ((annotate (plist-get completion-extra-properties
+                                                    :annotation-function)))
+                           (setq annotations
+                                 (mapcar (lambda (c)
+                                           (cons c (when-let ((a (funcall annotate c)))
+                                                     (substring-no-properties a))))
+                                         candidates)))
+                         "Busy")))
+              (should (equal "Busy" (plist-get (rsr/agent-sessions--read-folder
+                                                repo "Move session to folder: ")
+                                               :name))))
+            (should (equal "  1 session" (alist-get "Busy" annotations nil nil #'equal)))
+            (should (equal "  empty" (alist-get "Stale" annotations nil nil #'equal)))
+            (should-not (alist-get "No folder" annotations nil nil #'equal)))
+        (kill-buffer terminal)
+        (delete-directory root t)))))
