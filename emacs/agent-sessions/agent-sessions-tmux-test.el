@@ -859,6 +859,19 @@ covers attaching and the view going with its client."
           ;; Running it again adopts nothing new.
           (should-not (rsr/agent-sessions-tmux-reattach)))))))
 
+(ert-deftest rsr/agent-tmux-reattach-lists-each-window-once ()
+  (let ((dir (file-name-as-directory (make-temp-file "tmux-reattach-" t))))
+    (rsr/agent-tmux-test--with-fake
+        (rsr/agent-tmux-test--reattach-responder
+         (format "@9\trepo\t4242\t%s\t1-5\t\n" dir))
+      (cl-letf (((symbol-function 'rsr/agent-sessions--emacs-alive-p) #'ignore))
+        (rsr/agent-tmux-test--log-row "1-5" dir "sid-abc")
+        ;; The old id "1-5" stays filed for hooks, but is not a second row.
+        (let ((proxy (car (rsr/agent-sessions-tmux-reattach))))
+          (should (equal (list (buffer-local-value 'rsr/agent-session-id proxy))
+                         (mapcar (lambda (e) (plist-get e :id))
+                                 (rsr/agent-sessions--live-entries)))))))))
+
 (ert-deftest rsr/agent-tmux-reattach-follows-the-log-id ()
   (let ((dir (file-name-as-directory (make-temp-file "tmux-reattach-" t))))
     (rsr/agent-tmux-test--with-fake

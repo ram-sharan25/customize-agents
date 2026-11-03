@@ -1269,12 +1269,15 @@ closed counts as dead (`rsr/agent-sessions--sync-tmux')."
            (remhash id rsr/agent-sessions)
            (remhash id rsr/agent-session-id->buffer)))))
      rsr/agent-sessions)
-    ;; Plain terminal buffers with no agent session yet.
+    ;; Plain terminal buffers with no agent session yet.  A reattached proxy
+    ;; is also filed under its previous Emacs's id, an alias for hooks and
+    ;; `emacs-share' only; listing it would show the buffer twice.
     (maphash
      (lambda (id buf)
        (cond ((memq buf dead))
              ((not (buffer-live-p buf))
               (remhash id rsr/agent-session-id->buffer))
+             ((not (equal id (buffer-local-value 'rsr/agent-session-id buf))))
              ((not (gethash id rsr/agent-sessions))
               (push (list :id id
                           :session (rsr/agent-sessions--unread-status
