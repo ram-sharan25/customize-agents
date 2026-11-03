@@ -12,6 +12,7 @@ harness_dirs=(
   "$HOME/.claude/skills"
   "$HOME/.agents/skills"
   "$HOME/.pi/agent/skills"
+  "$HOME/.gemini/config/skills"
 )
 
 link() {
