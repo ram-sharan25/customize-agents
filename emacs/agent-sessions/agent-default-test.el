@@ -26,7 +26,9 @@
         (rsr/agent-tmux-claude)
         (should (equal sent "claude"))
         (rsr/agent-tmux-pi)
-        (should (equal sent "pi"))))))
+        (should (equal sent "pi"))
+        (rsr/agent-tmux-antigravity)
+        (should (equal sent "agy"))))))
 
 (ert-deftest rsr/agent-default-all-workflow-keys-use-preference ()
   (dolist (default '(claude pi))

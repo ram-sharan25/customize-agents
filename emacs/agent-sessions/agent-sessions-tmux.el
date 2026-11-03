@@ -943,5 +943,11 @@ are asked."
   (interactive)
   (rsr/agent-tmux-agent "pi"))
 
+;;;###autoload
+(defun rsr/agent-tmux-antigravity ()
+  "Open Antigravity CLI in a new window of this repository's tmux session."
+  (interactive)
+  (rsr/agent-tmux-agent "agy"))
+
 (provide 'agent-sessions-tmux)
 ;;; agent-sessions-tmux.el ends here
