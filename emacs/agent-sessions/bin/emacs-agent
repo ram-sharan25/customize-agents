@@ -150,7 +150,7 @@ case "$verb" in
   guide)
     file=guide-worker.md
     [ -z "$main" ] || file=guide-main.md
-    path="$selfdir/../skills/orca/$file"
+    path="$selfdir/../../../skills/orca/$file"
     [ -r "$path" ] || die "guide not found at $path"
     cat -- "$path"
     ;;

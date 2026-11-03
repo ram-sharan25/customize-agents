@@ -16,8 +16,9 @@ code says *what* it does; this file records *why*, so the intent survives edits.
   terminal's PATH.
 - `agent-workflow.el` — the planning workflow's keys (see "Workflow keys").
 - `bin/agent-launch` — the core launcher (see "Workflow keys").
-- `skills/orca/` — the `/orca` skill an agent loads to learn orchestration, and
-  the two guides `emacs-agent guide` serves.
+- `../../skills/orca/` (the repo's top-level `skills/`) — the `/orca` skill an
+  agent loads to learn orchestration, and the two guides `emacs-agent guide`
+  serves.  install.sh links it like every other skill.
 - `orchestration/` — notes on how *Orca* (the app) does the same thing; read
   before redesigning this, not as a description of what is here.
 - Wiring/config is in `../agent-session-config.el`.

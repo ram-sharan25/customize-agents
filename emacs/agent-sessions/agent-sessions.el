@@ -7273,11 +7273,6 @@ rather than raised: a spawn that works and warns beats a spawn that fails."
                        (abbreviate-file-name path) agent
                        (error-message-string err)))))))
 
-(defcustom rsr/agent-orchestration-claude-skills-dir
-  (expand-file-name "~/.claude/skills/")
-  "Where Claude Code looks for personal skills."
-  :type 'directory)
-
 (defcustom rsr/agent-orchestration-codex-skills-dir
   (expand-file-name "~/.codex/skills/")
   "Where Codex looks for skills, in the same `<name>/SKILL.md' layout Claude uses."
@@ -7292,7 +7287,8 @@ rather than raised: a spawn that works and warns beats a spawn that fails."
   "Name the skill is invoked by: `/orca', or `/orca --main' to coordinate.")
 
 (defun rsr/agent-orchestration--skill-dir ()
-  (expand-file-name (format "skills/%s/" rsr/agent-orchestration--skill-name)
+  "The repo's top-level `skills/orca', which install.sh links for every harness."
+  (expand-file-name (format "../../skills/%s/" rsr/agent-orchestration--skill-name)
                     rsr/agent-sessions--dir))
 
 (defun rsr/agent-orchestration--link (target link)
@@ -7318,19 +7314,16 @@ already our own link, because both directories belong to the user."
 
 ;;;###autoload
 (defun rsr/agent-orchestration-install-skill ()
-  "Make the orchestration skill loadable by Claude Code and Codex as `/orca'.
-Links this package's `skills/orca' into every directory the two tools read:
-both skill directories, and Codex's prompts directory so `/orca' works there
-as a slash command too.  The guides themselves are served by `emacs-agent
-guide', so what is installed is a stub that cannot go stale.  Idempotent."
+  "Make the orchestration skill loadable by Codex as `/orca'.
+The repo's install.sh links `skills/orca' for Claude, Pi, agy and
+~/.agents like every other skill; this adds what Codex needs beyond that:
+its skill directory, and its prompts directory so `/orca' works there as a
+slash command too.  The guides themselves are served by `emacs-agent guide',
+so what is installed is a stub that cannot go stale.  Idempotent."
   (interactive)
   (let* ((dir (rsr/agent-orchestration--skill-dir))
          (results
           (list
-           (rsr/agent-orchestration--link
-            (directory-file-name dir)
-            (expand-file-name rsr/agent-orchestration--skill-name
-                              rsr/agent-orchestration-claude-skills-dir))
            (rsr/agent-orchestration--link
             (directory-file-name dir)
             (expand-file-name rsr/agent-orchestration--skill-name
