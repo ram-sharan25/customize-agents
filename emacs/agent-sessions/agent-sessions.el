@@ -6388,11 +6388,13 @@ terminal buffer with a live session) stores an `agent-session:' resume link."
     (rsr/agent-sessions--store-file-link
      (nth 1 (rsr/agent-sessions--file-at-point))))
    (t
-    (rsr/agent-sessions--store-link-for
-     (cond ((derived-mode-p 'rsr/agent-sessions-mode)
-            (rsr/agent-sessions--session-at-point))
-           (rsr/agent-session-id
-            (gethash rsr/agent-session-id rsr/agent-sessions)))))))
+    (let ((terminal (rsr/agent-tmux-window-of (current-buffer))))
+      (rsr/agent-sessions--store-link-for
+       (cond ((derived-mode-p 'rsr/agent-sessions-mode)
+              (rsr/agent-sessions--session-at-point))
+             ((buffer-local-value 'rsr/agent-session-id terminal)
+              (gethash (buffer-local-value 'rsr/agent-session-id terminal)
+                       rsr/agent-sessions))))))))
 
 (defun rsr/agent-sessions--sync-default-directory ()
   "Track the worktree/repo at point in `default-directory'.

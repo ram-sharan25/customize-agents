@@ -2487,5 +2487,31 @@ Each payload is camelCase with no event name, as agy sends it."
                   (rsr/agent-orchestration--model-flag 'agy "gemini-x"))
                  "agy --model gemini-x -i \"$(cat /b/brief.md)\"")))
 
+(ert-deftest rsr/agent-sessions-org-store-link-resolves-tmux-view ()
+  "A tmux view stores the live session behind the selected chat window."
+  (let* ((view (generate-new-buffer " *agent-tmux-view*"))
+         (proxy (generate-new-buffer " *agent-tmux-proxy*"))
+         (session (list :buffer proxy :agent-type "pi"
+                        :agent-session-id "native-session"))
+         (rsr/agent-sessions (make-hash-table :test 'equal))
+         stored)
+    (unwind-protect
+        (progn
+          (with-current-buffer proxy
+            (setq-local rsr/agent-session-id "terminal-session"))
+          (puthash "terminal-session" session rsr/agent-sessions)
+          (cl-letf (((symbol-function 'rsr/agent-tmux-window-of)
+                     (lambda (buffer)
+                       (should (eq buffer view))
+                       proxy))
+                    ((symbol-function 'rsr/agent-sessions--store-link-for)
+                     (lambda (candidate)
+                       (setq stored candidate)
+                       t)))
+            (with-current-buffer view
+              (should (rsr/agent-sessions--org-store-link)))
+            (should (eq stored session))))
+      (mapc #'kill-buffer (list view proxy)))))
+
 (provide 'agent-sessions-test)
 ;;; agent-sessions-test.el ends here
