@@ -413,13 +413,129 @@ sessions under it registered, and asks when there are several."
           (should (file-exists-p (plist-get args :brief))))))))
 
 (ert-deftest rsr/agent-workflow-dashboard-c-and-y-are-bound ()
-  (should (keymapp (lookup-key rsr/agent-sessions-mode-map (kbd "c"))))
-  (should (eq (lookup-key rsr/agent-sessions-mode-map (kbd "c P"))
-              (lookup-key rsr/agent-workflow-map (kbd "c P"))))
+  (should (eq (lookup-key rsr/agent-sessions-mode-map (kbd "c"))
+              #'rsr/agent-workflow-child-menu))
   (should (eq (lookup-key rsr/agent-sessions-mode-map (kbd "y"))
               #'rsr/agent-workflow-bring-in))
   (should (eq (lookup-key rsr/agent-workflow-map (kbd "y"))
               #'rsr/agent-workflow-bring-in)))
+
+(defmacro rsr/agent-workflow-test--with-menu-args (args &rest body)
+  "Run BODY as if the workflow menu were open with ARGS."
+  (declare (indent 1) (debug t))
+  `(cl-letf (((symbol-function 'transient-args) (lambda (_) ,args)))
+     ,@body))
+
+(ert-deftest rsr/agent-workflow-menu-stage-uses-the-default-agent ()
+  (let ((rsr/agent-workflow-plans-directory (rsr/agent-workflow-test--plans-root))
+        (rsr/agent-sessions-default-agent 'pi)
+        (rsr/agent-workflow-agent nil))
+    (rsr/agent-workflow-test--capturing-launch
+      (rsr/agent-workflow-test--with-menu-args nil
+        (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "task-b")))
+          (call-interactively #'rsr/agent-workflow-menu-plan-implementation)))
+      (should (equal (plist-get (car launched) :skill) "plan-implementation"))
+      (should (equal (plist-get (car launched) :agent) "pi"))
+      (should-not (plist-get (car launched) :parent)))))
+
+(ert-deftest rsr/agent-workflow-menu-agent-cycles-and-sticks ()
+  (let ((rsr/agent-workflow-plans-directory (rsr/agent-workflow-test--plans-root))
+        (rsr/agent-sessions-default-agent 'claude)
+        (rsr/agent-workflow-agents '("claude" "pi" "agy"))
+        (rsr/agent-workflow-agent nil))
+    (rsr/agent-workflow-cycle-agent)
+    (should (equal rsr/agent-workflow-agent "pi"))
+    (rsr/agent-workflow-cycle-agent)
+    (should (equal rsr/agent-workflow-agent "agy"))
+    (should (string-match-p "agent \\[claude|pi|agy\\]"
+                            (rsr/agent-workflow--agent-description)))
+    (rsr/agent-workflow-test--capturing-launch
+      (rsr/agent-workflow-test--with-menu-args nil
+        (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "task-b")))
+          (call-interactively #'rsr/agent-workflow-menu-review-plan)
+          (call-interactively #'rsr/agent-workflow-menu-implement-plan)))
+      (should (equal (mapcar (lambda (args) (plist-get args :agent)) launched)
+                     '("agy" "agy"))))
+    (rsr/agent-workflow-cycle-agent)
+    (should (equal rsr/agent-workflow-agent "claude"))))
+
+(ert-deftest rsr/agent-workflow-menu-without-agents-uses-the-default ()
+  (let ((rsr/agent-sessions-default-agent 'pi)
+        (rsr/agent-workflow-agents nil)
+        (rsr/agent-workflow-agent nil))
+    (should (equal (substring-no-properties (rsr/agent-workflow--agent-description))
+                   "agent [pi]"))
+    (rsr/agent-workflow-cycle-agent)
+    (should (equal (rsr/agent-workflow--menu-agent) "pi"))))
+
+(ert-deftest rsr/agent-workflow-menu-child-switch-opens-a-child ()
+  (let ((rsr/agent-workflow-agent "pi") opened)
+    (cl-letf (((symbol-function 'rsr/agent-workflow-open-child)
+               (lambda (skill agent &optional model)
+                 (setq opened (list 'child skill agent model))))
+              ((symbol-function 'rsr/agent-workflow-open-top-level)
+               (lambda (skill agent &optional model)
+                 (setq opened (list 'top skill agent model)))))
+      (rsr/agent-workflow-test--with-menu-args '("--child")
+        (call-interactively #'rsr/agent-workflow-menu-review-plan))
+      (should (equal opened '(child "review-plan" "pi" nil)))
+      (rsr/agent-workflow-test--with-menu-args nil
+        (call-interactively #'rsr/agent-workflow-menu-review-plan))
+      (should (equal opened '(top "review-plan" "pi" nil))))))
+
+(ert-deftest rsr/agent-workflow-menu-typed-model-wins-for-one-launch ()
+  (let ((rsr/agent-workflow-agents
+         '("claude" ("pi-local" :agent "pi" :model "ollama/qwen2.5-coder:32b")))
+        opened)
+    (cl-letf (((symbol-function 'rsr/agent-workflow-open-top-level)
+               (lambda (skill agent &optional model)
+                 (setq opened (list skill agent model)))))
+      (let ((rsr/agent-workflow-agent "pi-local"))
+        (rsr/agent-workflow-test--with-menu-args '("--model=ollama/llama3")
+          (call-interactively #'rsr/agent-workflow-menu-review-plan))
+        (should (equal opened '("review-plan" "pi" "ollama/llama3")))
+        (rsr/agent-workflow-test--with-menu-args nil
+          (call-interactively #'rsr/agent-workflow-menu-review-plan))
+        (should (equal opened '("review-plan" "pi" "ollama/qwen2.5-coder:32b"))))
+      (let ((rsr/agent-workflow-agent "claude"))
+        (rsr/agent-workflow-test--with-menu-args nil
+          (call-interactively #'rsr/agent-workflow-menu-review-plan))
+        (should (equal opened '("review-plan" "claude" nil)))))))
+
+(ert-deftest rsr/agent-workflow-menu-entry-runs-its-agent-on-its-model ()
+  (let ((rsr/agent-workflow-plans-directory (rsr/agent-workflow-test--plans-root))
+        (rsr/agent-sessions-default-agent 'claude)
+        (rsr/agent-workflow-agents
+         '("claude" ("pi-local" :agent "pi" :model "ollama/qwen2.5-coder:32b")))
+        (rsr/agent-workflow-agent nil))
+    (rsr/agent-workflow-cycle-agent)
+    (should (equal rsr/agent-workflow-agent "pi-local"))
+    (should (string-match-p "agent \\[claude|pi-local\\]"
+                            (rsr/agent-workflow--agent-description)))
+    (rsr/agent-workflow-test--capturing-launch
+      (rsr/agent-workflow-test--with-menu-args nil
+        (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "task-b")))
+          (call-interactively #'rsr/agent-workflow-menu-plan-implementation)))
+      (let ((args (car launched)))
+        (should (equal (plist-get args :agent) "pi"))
+        (should (equal (plist-get args :model) "ollama/qwen2.5-coder:32b"))
+        (should (equal (member "--model" (rsr/agent-workflow--launch-argv args))
+                       (append '("--model" "ollama/qwen2.5-coder:32b")
+                               (cdr (member "ollama/qwen2.5-coder:32b"
+                                            (rsr/agent-workflow--launch-argv args))))))))
+    (rsr/agent-workflow-cycle-agent)
+    (should (equal (rsr/agent-workflow--resolve rsr/agent-workflow-agent)
+                   '("claude")))))
+
+(ert-deftest rsr/agent-workflow-menu-has-every-stage-key ()
+  (let ((suffixes (append (rsr/agent-workflow--stage-children nil)
+                          (rsr/agent-workflow--stage-children t))))
+    (should (equal (sort (mapcar (lambda (s) (plist-get (cdr s) :key)) suffixes) #'string<)
+                   (sort (mapcar #'car rsr/agent-workflow-keys) #'string<)))
+    (should (equal (sort (mapcar (lambda (s) (plist-get (cdr s) :key))
+                                 (rsr/agent-workflow--stage-children t))
+                         #'string<)
+                   '("I" "P" "R")))))
 
 (ert-deftest rsr/agent-workflow-bring-in-lists-only-finished-children ()
   (let* ((session (list :agent-session-id "thread-y" :buffer 'buf))

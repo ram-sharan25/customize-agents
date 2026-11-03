@@ -77,12 +77,14 @@ ALLOW-NEW adds `rsr/agent-workflow-new-task-choice'."
 
 (defun rsr/agent-workflow--launch-argv (args)
   "The `agent-launch' arguments for the launch plist ARGS.
-ARGS has :skill, :agent, and optionally :task, and for a child :parent,
-:slug, :dir and :brief."
+ARGS has :skill, :agent, and optionally :model and :task, and for a child
+:parent, :slug, :dir and :brief."
   (let ((task (plist-get args :task))
+        (model (plist-get args :model))
         (parent (plist-get args :parent)))
     (append (list "--skill" (plist-get args :skill)
                   "--agent" (plist-get args :agent))
+            (and model (list "--model" model))
             (and task (list "--task" task))
             (if parent
                 (list "--child" "--parent" parent
@@ -132,10 +134,11 @@ of output is shown, or the failure with its output."
   "Show the first line of the launcher's OUTPUT."
   (message "%s" (car (split-string (or output "") "\n" t))))
 
-(defun rsr/agent-workflow-open-top-level (skill agent)
-  "Open a top-level session running SKILL with AGENT; ask for the task folder."
+(defun rsr/agent-workflow-open-top-level (skill agent &optional model)
+  "Open a top-level session running SKILL with AGENT; ask for the task folder.
+MODEL, when given, is the model AGENT runs on."
   (let ((task (rsr/agent-workflow--read-task (equal skill "clarify-requirements"))))
-    (rsr/agent-workflow--launch :skill skill :agent agent :task task)))
+    (rsr/agent-workflow--launch :skill skill :agent agent :model model :task task)))
 
 (defun rsr/agent-workflow--parent-session ()
   "The session a child opens under, as (TERMINAL-ID . SESSION).
@@ -185,10 +188,11 @@ Pointers only, never transcript: the child works from the files."
               "(=instructions/shared/workflow-conventions.md=, \"Children and report-back\").\n"))
     brief))
 
-(defun rsr/agent-workflow-open-child (skill agent)
+(defun rsr/agent-workflow-open-child (skill agent &optional model)
   "Open a SKILL session with AGENT as a child of the current session.
-The child inherits the parent's registered Plans folder; when the parent has
-none, the user is asked, as for a top-level key."
+MODEL, when given, is the model AGENT runs on.  The child inherits the
+parent's registered Plans folder; when the parent has none, the user is
+asked, as for a top-level key."
   (pcase-let* ((`(,parent-id . ,parent) (rsr/agent-workflow--parent-session))
                (task (or (car (rsr/agent-sessions--session-folder-paths parent "plans"))
                          (rsr/agent-workflow--read-task)
@@ -196,7 +200,7 @@ none, the user is asked, as for a top-level key."
                (dir (rsr/agent-workflow--child-dir task skill))
                (brief (rsr/agent-workflow--write-child-brief
                        dir skill task parent-id parent)))
-    (rsr/agent-workflow--launch :skill skill :agent agent :task task
+    (rsr/agent-workflow--launch :skill skill :agent agent :model model :task task
                                 :parent parent-id :slug skill :dir dir
                                 :brief brief)))
 
@@ -256,7 +260,6 @@ session as if the user had."
 
 (define-key rsr/agent-workflow-map (kbd "c") (cons "child..." rsr/agent-workflow-child-map))
 (define-key rsr/agent-workflow-map (kbd "y") (cons "bring in" #'rsr/agent-workflow-bring-in))
-(define-key rsr/agent-sessions-mode-map (kbd "c") rsr/agent-workflow-child-map)
 (define-key rsr/agent-sessions-mode-map (kbd "y") #'rsr/agent-workflow-bring-in)
 
 ;;;; `O': open the code or Plans folder of the thing at point
@@ -568,6 +571,119 @@ it only when `y' hands it over."
 
 (define-key rsr/agent-workflow-map (kbd "a") (cons "annotate" #'rsr/agent-workflow-annotate))
 (define-key rsr/agent-sessions-mode-map (kbd "a") #'rsr/agent-workflow-annotate)
+
+;;;; The workflow menu: stage and agent on one screen (`C-c i w', dashboard `c')
+
+;; Two choices go into opening a stage: which stage, and which agent runs it.
+;; The stage changes every time, so it stays one key; the agent changes
+;; rarely, so `-a' sets it once and it is shown and kept until changed.  `-c'
+;; opens the stage as a child; the dashboard's `c' opens the menu with it on.
+
+(require 'transient)
+
+(defcustom rsr/agent-workflow-agents nil
+  "Agents `-a' cycles through in the workflow menu.
+The package offers none: set this in local.el to the agents installed on the
+machine.  Each entry is an agent `bin/agent-launch' accepts (claude, pi,
+agy), or (LABEL :agent AGENT :model MODEL) to run that agent on a model:
+
+  (\"claude\" \"agy\" (\"pi-local\" :agent \"pi\" :model \"ollama/qwen2.5-coder:32b\"))
+
+The menu shows each entry by its name or LABEL.  Left nil, the menu only uses
+the default agent."
+  :type '(repeat (choice string
+                         (cons string (plist :key-type symbol :value-type string))))
+  :group 'rsr/agent-sessions)
+
+(defvar rsr/agent-workflow-agent nil
+  "Label of the entry the workflow menu opens stages with; nil for the default.
+Set by `-a' in the menu and kept for the rest of the Emacs session.")
+
+(defun rsr/agent-workflow--labels ()
+  "The labels of `rsr/agent-workflow-agents', in order."
+  (mapcar (lambda (entry) (if (consp entry) (car entry) entry))
+          rsr/agent-workflow-agents))
+
+(defun rsr/agent-workflow--menu-agent ()
+  "The label of the entry the menu's stage keys use."
+  (or rsr/agent-workflow-agent (rsr/agent-sessions-select-agent)))
+
+(defun rsr/agent-workflow--resolve (label)
+  "The (AGENT . MODEL) the entry LABEL names; a bare name is its own agent."
+  (let ((entry (assoc label (seq-filter #'consp rsr/agent-workflow-agents))))
+    (if entry
+        (cons (plist-get (cdr entry) :agent) (plist-get (cdr entry) :model))
+      (cons label nil))))
+
+(defun rsr/agent-workflow-cycle-agent ()
+  "Make the next entry in `rsr/agent-workflow-agents' the menu's agent."
+  (interactive)
+  (let* ((labels (rsr/agent-workflow--labels))
+         (tail (cdr (member (rsr/agent-workflow--menu-agent) labels))))
+    (setq rsr/agent-workflow-agent (or (car tail) (car labels)))))
+
+(defun rsr/agent-workflow--agent-description ()
+  "The `-a' line: every agent, the current one highlighted."
+  (let ((current (rsr/agent-workflow--menu-agent)))
+    (format "agent [%s]"
+            (mapconcat (lambda (label)
+                         (propertize label 'face (if (equal label current)
+                                                     'transient-value
+                                                   'transient-inactive-value)))
+                       (or (rsr/agent-workflow--labels) (list current)) "|"))))
+
+(defun rsr/agent-workflow--menu-run (skill)
+  "Open SKILL with the menu's agent and model, as a child when `-c' is on.
+A model typed with `-m' wins over the entry's; with neither, the agent runs
+on its own default."
+  (pcase-let* ((args (transient-args 'rsr/agent-workflow-menu))
+               (`(,agent . ,entry-model)
+                (rsr/agent-workflow--resolve (rsr/agent-workflow--menu-agent)))
+               (model (or (transient-arg-value "--model=" args) entry-model)))
+    (if (transient-arg-value "--child" args)
+        (rsr/agent-workflow-open-child skill agent model)
+      (rsr/agent-workflow-open-top-level skill agent model))))
+
+(dolist (entry rsr/agent-workflow-keys)
+  (let ((skill (nth 1 entry)))
+    (defalias (intern (format "rsr/agent-workflow-menu-%s" skill))
+      (lambda ()
+        (interactive)
+        (rsr/agent-workflow--menu-run skill))
+      (format "Open %s from the workflow menu, with its agent and `-c'." skill))))
+
+(defun rsr/agent-workflow--stage-children (reviews)
+  "Menu suffixes for the stage keys; the review keys when REVIEWS is non-nil."
+  (transient-parse-suffixes
+   'rsr/agent-workflow-menu
+   (mapcar (pcase-lambda (`(,key ,skill ,label))
+             (list key label (intern (format "rsr/agent-workflow-menu-%s" skill))))
+           (seq-filter (lambda (entry)
+                         (eq (and reviews t)
+                             (not (equal (car entry) (downcase (car entry))))))
+                       rsr/agent-workflow-keys))))
+
+(transient-define-prefix rsr/agent-workflow-menu ()
+  "Open a workflow stage: the agent with `-a', a model with `-m', a child with `-c'."
+  ["Options"
+   ("-a" rsr/agent-workflow-cycle-agent
+    :description rsr/agent-workflow--agent-description :transient t)
+   ("-m" "model, this launch only" "--model=" :prompt "Model: ")
+   ("-c" "as child of the current session" "--child")]
+  [["Stage" :class transient-column
+    :setup-children (lambda (_) (rsr/agent-workflow--stage-children nil))]
+   ["Review" :class transient-column
+    :setup-children (lambda (_) (rsr/agent-workflow--stage-children t))]
+   ["Other"
+    ("y" "bring in" rsr/agent-workflow-bring-in)
+    ("a" "annotate" rsr/agent-workflow-annotate)]])
+
+(defun rsr/agent-workflow-child-menu ()
+  "The workflow menu with `-c' already on."
+  (interactive)
+  (transient-setup 'rsr/agent-workflow-menu nil nil :value '("--child")))
+
+(define-key rsr/agent-sessions-mode-map (kbd "c") #'rsr/agent-workflow-child-menu)
 
 (provide 'agent-workflow)
 ;;; agent-workflow.el ends here
