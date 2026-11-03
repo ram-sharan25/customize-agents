@@ -22,6 +22,14 @@ run "$launch" --dry-run --top --agent pi --skill review-plan --task "$task" --cw
   || fail "pi: exit $?"
 has "command: pi -n 'review-plan' '/skill:review-plan $task/'" pi
 
+# agy takes Claude's skill form through -i, which keeps the session open.
+run "$launch" --dry-run --top --agent agy --skill review-plan --task "$task" --cwd "$tmp" \
+  || fail "agy: exit $?"
+has "command: agy -i '/review-plan $task/'" agy
+run "$launch" --dry-run --top --agent agy --fork --skill review-plan --task "$task" --cwd "$tmp" \
+  && fail "agy fork: expected a failure"
+has "--fork is not supported for agy" "agy fork"
+
 # Machine preference applies only when --agent is omitted, and reaches children.
 run env AGENT_DEFAULT=pi "$launch" --dry-run --top --skill review-plan --task "$task" --cwd "$tmp" \
   || fail "configured Pi: exit $?"

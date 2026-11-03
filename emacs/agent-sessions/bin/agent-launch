@@ -4,14 +4,14 @@
 # and explore-session.
 #
 #   agent-launch (--skill NAME | --prompt-file FILE) [--task DIR] [--brief FILE]
-#                [--agent claude|pi] [--top | --child] [--parent TERMINAL-ID]
+#                [--agent claude|pi|agy] [--top | --child] [--parent TERMINAL-ID]
 #                [--slug SLUG --dir OUTDIR] [--cwd DIR] [--name WINDOW]
 #                [--title TITLE] [--attach FILE] [--attach-label LABEL]
 #                [--fork] [--session-file FILE]
 #                [--no-focus] [--env KEY=VALUE]... [--dry-run]
 #
 #   --skill        first prompt is the skill's command with the task folder:
-#                    claude: /NAME TASK      pi: /skill:NAME TASK
+#                    claude, agy: /NAME TASK      pi: /skill:NAME TASK
 #                  followed by the --brief file's text, when given
 #   --prompt-file  first prompt is this file's text, as is (explore briefs)
 #   --top          a session of its own (the default); opened from a dashboard
@@ -112,9 +112,9 @@ if [ -z "$name" ]; then
 fi
 [ -n "$attach" ] || attach=${brief:-$prompt_file}
 case "$agent" in
-  claude|pi) ;;
+  claude|pi|agy) ;;
   codex) die "codex is deferred; see skills/explore-session/SKILL.md" 4 ;;
-  *) die "unsupported agent: $agent (claude, pi)" 2 ;;
+  *) die "unsupported agent: $agent (claude, pi, agy)" 2 ;;
 esac
 
 # --- The first prompt and the agent's command --------------------------------
@@ -124,7 +124,7 @@ prompt_expr() {
     return
   fi
   case "$agent" in
-    claude) line="/$skill${task:+ $task}" ;;
+    claude|agy) line="/$skill${task:+ $task}" ;;
     pi) line="/skill:$skill${task:+ $task}" ;;
   esac
   if [ -n "$brief" ]; then
@@ -156,6 +156,11 @@ agent_command() {
       else
         printf 'pi -n %s %s' "$(shq "$name")" "$p"
       fi ;;
+    agy)
+      # agy has no fork and no session name flag; -i runs the first prompt
+      # and keeps the session open.
+      [ -z "$fork" ] || die "--fork is not supported for agy" 2
+      printf 'agy -i %s' "$p" ;;
   esac
 }
 cmd=$(agent_command) || exit 1
