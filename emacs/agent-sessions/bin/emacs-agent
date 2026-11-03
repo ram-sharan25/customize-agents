@@ -1,7 +1,7 @@
 #!/bin/sh
 # Talk to other agents through the Emacs agent-sessions dashboard.
 #
-#   emacs-agent spawn --type claude|codex --worktree DIR --task TEXT [--title T] [--model M]
+#   emacs-agent spawn --type claude|codex|pi|agy --worktree DIR --task TEXT [--title T] [--model M]
 #   emacs-agent send --to ADDRESS --type TYPE --subject S [--body B] [--files csv] [--report P]
 #   emacs-agent send-and-wait --to ADDRESS --subject S [--body B] [--type TYPE] [--types csv]
 #   emacs-agent done --summary S [--files csv] [--report P] [--subject S] [--to ADDRESS]
@@ -157,7 +157,7 @@ case "$verb" in
 
   spawn)
     need_session
-    [ -n "$type_" ] || die "spawn needs --type (claude, codex, ...)"
+    [ -n "$type_" ] || die "spawn needs --type (claude, codex, pi, agy)"
     [ -n "$worktree" ] || die "spawn needs --worktree DIR (see 'emacs-agent worktrees')"
     [ -n "$task" ] || die "spawn needs --task TEXT or --task-file FILE"
     out=$(call "(rsr/agent-orchestration-spawn \"$(esc "$EMACS_AGENT_SESSION_ID")\" \"$(esc "$type_")\" \"$(esc "$worktree")\" \"$(esc "$task")\" \"$(esc "$title")\" \"$(esc "$model")\")")

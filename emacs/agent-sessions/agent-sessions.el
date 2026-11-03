@@ -237,7 +237,10 @@ A branch label falls back to the folder name on a detached HEAD."
     (pi . ((SessionStart . stopped)
            (Stop . needs-attention)
            (StopFailure . error)
-           (UserPromptSubmit . running))))
+           (UserPromptSubmit . running)))
+    (agy . ((SessionStart . stopped)
+            (PreInvocation . running)
+            (Stop . needs-attention))))
   "Per-agent hook/notify event name -> status.
 Events not listed here (PreToolUse, PostToolUse, SubagentStart/Stop, etc.)
 leave a session's existing status unchanged rather than resetting it — hook
@@ -249,7 +252,8 @@ idle prompt (and Claude on --resume), so a brand-new session would otherwise
 fall through to the `running' default in `rsr/agent-hook-notify' and read as
 mid-turn while sitting at its prompt.  No entry for Codex — its SessionStart
 fires lazily on the first prompt, in the same instant as UserPromptSubmit, so
-mapping it would risk clobbering `running' under unordered delivery.")
+mapping it would risk clobbering `running' under unordered delivery.  agy has
+no prompt event; `PreInvocation' (before each model call) marks the turn.")
 
 (defun rsr/agent-session--status-for (agent-type event-name)
   "Return the status EVENT-NAME maps to, or nil if it shouldn't change status."
@@ -640,6 +644,7 @@ As a final fallback, return the unique unresolved AGENT-TYPE terminal whose
 directory matches PAYLOAD's `cwd'; return nil rather than guess if ambiguous."
   (let* ((agent-sid (or (and payload (gethash "session_id" payload))
                         (and payload (gethash "conversation_id" payload))
+                        (and payload (gethash "conversationId" payload))
                         (and payload (gethash "thread_id" payload))))
          (cwd (and payload (gethash "cwd" payload)))
          (canonical-cwd (and cwd (ignore-errors
@@ -722,6 +727,7 @@ to the terminal that actually owns the event."
                          (sid (and payload
                                    (or (gethash "session_id" payload)
                                        (gethash "conversation_id" payload)
+                                       (gethash "conversationId" payload)
                                        (gethash "thread_id" payload)))))
                      ;; A new agent in the same terminal starts fresh rather
                      ;; than inheriting the exited one's parent, prompt or id.
@@ -735,7 +741,7 @@ to the terminal that actually owns the event."
          ;; anything that ends one.  Only the status table's own events move
          ;; it, so a straggler cannot reopen a turn that has ended.
          (turn-open (pcase event-name
-                      ("UserPromptSubmit" t)
+                      ((or "UserPromptSubmit" "PreInvocation") t)
                       ((or "Stop" "StopFailure" "SessionEnd" "SessionStart"
                            "agent-turn-complete")
                        nil)
@@ -759,6 +765,7 @@ to the terminal that actually owns the event."
          ;; to the previously captured value.
          (agent-session-id (or (and payload (gethash "session_id" payload))
                                (and payload (gethash "conversation_id" payload))
+                               (and payload (gethash "conversationId" payload))
                                (and payload (gethash "thread_id" payload))
                                (and existing (plist-get existing :agent-session-id))))
          ;; Path to this session's transcript (Claude includes it on every
@@ -1465,6 +1472,7 @@ an agent reading its inbox must not fail because the database is busy."
     ("claude" nerd-icons-codicon "nf-cod-claude" font-lock-constant-face)
     ("pi" nerd-icons-mdicon "nf-md-pi_box" font-lock-type-face)
     ("codex" nerd-icons-mdicon "nf-md-code_braces" font-lock-string-face)
+    ("agy" nerd-icons-mdicon "nf-md-google" font-lock-keyword-face)
     (agent nerd-icons-mdicon "nf-md-robot_outline" rsr/agent-session-agent))
   "(KIND FUNCTION NAME FACE) for each line icon.
 KIND is a line kind, or an agent type string for a session row (`agent' for an
@@ -5843,7 +5851,8 @@ as the editable default so it can be tweaked before confirming."
 (defcustom rsr/agent-session-resume-commands
   '((claude . "claude --resume %s")
     (codex  . "codex resume %s")
-    (pi     . "pi --session %s"))
+    (pi     . "pi --session %s")
+    (agy    . "agy --conversation %s"))
   "Alist mapping AGENT-TYPE symbol to a shell command that resumes a session.
 The %s is replaced with the agent's own session id."
   :type '(alist :key-type symbol :value-type string))
@@ -6427,7 +6436,8 @@ Sections fold with TAB; Shift+TAB toggles overview; `F' manages folders."
 (defcustom rsr/agent-orchestration-launch-commands
   '((claude . "claude %m \"$(cat %b)\"")
     (codex  . "codex %m \"$(cat %b)\"")
-    (pi     . "pi %m \"$(cat %b)\""))
+    (pi     . "pi %m \"$(cat %b)\"")
+    (agy    . "agy %m -i \"$(cat %b)\""))
   "Shell command per agent type that starts a worker on a task brief.
 Rendered with `format-spec':
 
@@ -6450,7 +6460,8 @@ that type is refused rather than quietly run on the default model."
 (defcustom rsr/agent-orchestration-model-flags
   '((claude . "--model %s")
     (codex  . "--model %s")
-    (pi     . "--model %s"))
+    (pi     . "--model %s")
+    (agy    . "--model %s"))
   "How each agent type spells \"run on this model\", with %s for the model name.
 This is what `%m' in `rsr/agent-orchestration-launch-commands' expands to when a
 spawn names a model.  A type with no entry here takes no model, and a spawn
@@ -6944,8 +6955,8 @@ command instead of sending it to an agent."
                           (rsr/agent-sessions--foreground-command buf))))
     (and foreground
          (not (equal (plist-get session :last-event) "SessionEnd"))
-         (or (member agent '("claude" "codex" "pi"))
-             (member (downcase foreground) '("claude" "codex" "pi"))))))
+         (or (member agent '("claude" "codex" "pi" "agy"))
+             (member (downcase foreground) '("claude" "codex" "pi" "agy"))))))
 
 (defun rsr/agent-sessions--prompt-entry-viewed-at (entry)
   "Return when ENTRY's terminal was most recently selected, or nil."
@@ -8426,6 +8437,11 @@ does.  `q' in the help puts the window's previous buffer back."
   "Codex hooks file that `rsr/agent-sessions-install' wires."
   :type 'file)
 
+(defcustom rsr/agent-sessions-agy-hooks-file
+  (expand-file-name "~/.gemini/config/hooks.json")
+  "Antigravity CLI (agy) hooks file that `rsr/agent-sessions-install' wires."
+  :type 'file)
+
 (defcustom rsr/agent-sessions-pi-extension-file
   (expand-file-name "~/.pi/agent/extensions/agent-sessions-pi-hook.ts")
   "Where `rsr/agent-sessions-install' installs the Pi event forwarder.
@@ -8454,6 +8470,16 @@ noticed when the terminal dies or another session starts in it."
 (defconst rsr/agent-sessions--claude-hook-script "agent-sessions-claude-hook.sh")
 (defconst rsr/agent-sessions--codex-hook-script "agent-sessions-codex-hook.sh")
 (defconst rsr/agent-sessions--pi-hook-script "agent-sessions-pi-hook.ts")
+(defconst rsr/agent-sessions--agy-hook-script "agent-sessions-agy-hook.sh")
+
+(defcustom rsr/agent-sessions-agy-hook-events
+  '("SessionStart" "PreInvocation" ("PostToolUse" . "*") "Stop")
+  "agy hook events to forward to the dashboard.
+Each item is an event name, or (EVENT . MATCHER) for tool-scoped events."
+  :type '(repeat (choice string (cons string string))))
+
+(defconst rsr/agent-sessions--agy-hook-name "agent-sessions"
+  "Our named hook in agy's hooks.json, beside other tools' (orca's).")
 
 (defun rsr/agent-sessions--read-json (file)
   "Parse FILE as JSON into hash-tables + lists, or an empty object if absent.
@@ -8568,6 +8594,41 @@ editing the source self-heals."
   (make-directory (file-name-directory rsr/agent-sessions-pi-extension-file) t)
   (copy-file script rsr/agent-sessions-pi-extension-file t))
 
+(defun rsr/agent-sessions--wire-agy (script)
+  "Set our named hook in `rsr/agent-sessions-agy-hooks-file' to run SCRIPT.
+agy's hooks.json maps hook names to their events, so ours is one entry,
+replaced whole on every run; an event's handlers are listed directly, and a
+tool event's are wrapped in a matcher group.  SCRIPT gets the event name as
+its argument because agy's payload does not carry it."
+  (let ((root (rsr/agent-sessions--read-json rsr/agent-sessions-agy-hooks-file))
+        (spec (make-hash-table :test 'equal)))
+    (dolist (ev rsr/agent-sessions-agy-hook-events)
+      (let* ((event (if (consp ev) (car ev) ev))
+             (handler (make-hash-table :test 'equal)))
+        (puthash "type" "command" handler)
+        (puthash "command" (format "%s %s" (shell-quote-argument script) event) handler)
+        (puthash "timeout" 10 handler)
+        (puthash event
+                 (if (consp ev)
+                     (let ((group (make-hash-table :test 'equal)))
+                       (puthash "matcher" (cdr ev) group)
+                       (puthash "hooks" (vector handler) group)
+                       (vector group))
+                   (vector handler))
+                 spec)))
+    (puthash rsr/agent-sessions--agy-hook-name spec root)
+    (rsr/agent-sessions--write-json rsr/agent-sessions-agy-hooks-file root)))
+
+(defun rsr/agent-sessions--unwire-agy ()
+  "Remove our named hook from agy's hooks.json.  Returns t if it was there."
+  (let ((file rsr/agent-sessions-agy-hooks-file))
+    (when (file-exists-p file)
+      (let ((root (rsr/agent-sessions--read-json file)))
+        (when (gethash rsr/agent-sessions--agy-hook-name root)
+          (remhash rsr/agent-sessions--agy-hook-name root)
+          (rsr/agent-sessions--write-json file root)
+          t)))))
+
 (defun rsr/agent-sessions--unwire-pi ()
   "Remove the installed Pi extension.  Returns t if anything was removed."
   (let ((file rsr/agent-sessions-pi-extension-file))
@@ -8577,15 +8638,16 @@ editing the source self-heals."
 
 ;;;###autoload
 (defun rsr/agent-sessions-install (&optional force)
-  "Wire this package's hooks into Claude Code, Codex, and Pi.
-So a `claude'/`codex'/`pi' run in any Emacs terminal reports to the dashboard,
+  "Wire this package's hooks into Claude Code, Codex, Pi and agy.
+So a `claude'/`codex'/`pi'/`agy' run in any Emacs terminal reports to the dashboard,
 without depending on any external tool (e.g. orca).  Idempotent — re-run any
 time: after installing a second agent, moving this package, changing the hook
 event lists, or removing orca.  Only touches hook entries pointing at this
 package's own forwarder scripts; other hooks are left as-is.
 
-Wires Claude when `~/.claude' exists, Codex when `~/.codex' exists, and Pi
-when `~/.pi' exists; with a prefix arg (FORCE) wires all regardless,
+Wires Claude when `~/.claude' exists, Codex when `~/.codex' exists, Pi
+when `~/.pi' exists, and agy when `~/.gemini' exists; with a prefix arg (FORCE)
+wires all regardless,
 creating the config as needed.  Also starts the Emacs server, which the
 hooks need to reach us."
   (interactive "P")
@@ -8595,8 +8657,10 @@ hooks need to reach us."
                                         rsr/agent-sessions--dir))
         (pi-script (expand-file-name rsr/agent-sessions--pi-hook-script
                                      rsr/agent-sessions--dir))
+        (agy-script (expand-file-name rsr/agent-sessions--agy-hook-script
+                                      rsr/agent-sessions--dir))
         done)
-    (dolist (s (list claude-script codex-script pi-script))
+    (dolist (s (list claude-script codex-script pi-script agy-script))
       (if (file-exists-p s)
           (set-file-modes s #o755)
         (error "agent-sessions: missing hook script %s" s)))
@@ -8613,15 +8677,18 @@ hooks need to reach us."
     (when (or force (file-directory-p "~/.pi"))
       (rsr/agent-sessions--wire-pi pi-script)
       (push "Pi" done))
+    (when (or force (file-directory-p "~/.gemini"))
+      (rsr/agent-sessions--wire-agy agy-script)
+      (push "agy" done))
     (unless (server-running-p) (server-start))
     (if done
         (message "agent-sessions: wired %s (server running)"
                  (string-join (nreverse done) " + "))
-      (message "agent-sessions: neither ~/.claude, ~/.codex, nor ~/.pi found; use `C-u M-x rsr/agent-sessions-install' to force"))))
+      (message "agent-sessions: none of ~/.claude, ~/.codex, ~/.pi, ~/.gemini found; use `C-u M-x rsr/agent-sessions-install' to force"))))
 
 ;;;###autoload
 (defun rsr/agent-sessions-uninstall ()
-  "Remove this package's hooks from Claude Code, Codex, and Pi config.
+  "Remove this package's hooks from Claude Code, Codex, Pi and agy config.
 Leaves every other hook (orca's, yours) intact, and leaves the forwarder
 scripts on disk.  Safe to run whether or not `rsr/agent-sessions-install' ran."
   (interactive)
@@ -8635,7 +8702,9 @@ scripts on disk.  Safe to run whether or not `rsr/agent-sessions-install' ran."
                                    rsr/agent-sessions--codex-hook-script)
                                   "Codex")
                              (and (rsr/agent-sessions--unwire-pi)
-                                  "Pi")))))
+                                  "Pi")
+                             (and (rsr/agent-sessions--unwire-agy)
+                                  "agy")))))
     (message (if changed
                  (format "agent-sessions: unhooked from %s" (string-join changed " + "))
                "agent-sessions: nothing to remove"))))

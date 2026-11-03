@@ -139,7 +139,7 @@ repo: ~/dev/luma-core/
 ## 2. Write the brief, then spawn
 
 ```bash
-emacs-agent spawn --type claude|codex --worktree DIR --task TEXT \
+emacs-agent spawn --type claude|codex|pi|agy --worktree DIR --task TEXT \
   [--title SHORT] [--model NAME]
 # --task-file FILE reads the brief from a file, which is easier for long ones
 ```
@@ -164,7 +164,7 @@ knows to send exactly one `done`, to use `ask` instead of any interactive prompt
 and to stop when it is finished. You do not need to repeat that.
 
 `--type` is any agent type configured in
-`rsr/agent-orchestration-launch-commands` (`claude` and `codex` out of the box —
+`rsr/agent-orchestration-launch-commands` (`claude`, `codex`, `pi` and `agy` out of the box —
 adding one is a one-line defcustom edit the human can make).
 
 ## 3. Choose the model, when the task has an opinion about it

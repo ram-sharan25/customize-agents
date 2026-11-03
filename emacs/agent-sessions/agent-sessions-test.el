@@ -2385,5 +2385,107 @@ N seconds after the epoch, so every stamp is older than a press."
     (rsr/agent-sessions-visit-last-agent)
     (should (equal (cdr (car shown)) '(rsr/agent-sessions--display-buffer-here)))))
 
+;;; agy
+
+(defun rsr/agent-hook-test--agy-events (events)
+  "Feed agy EVENTS through the real hook script; return the row after each.
+Each payload is camelCase with no event name, as agy sends it."
+  (rsr/agent-sessions-test--with-temp-db
+    (let* ((directory (make-temp-file "agent-hook-agy-" t))
+           (term (generate-new-buffer " *agent-hook-agy*"))
+           (script (expand-file-name rsr/agent-sessions--agy-hook-script
+                                     rsr/agent-sessions--dir))
+           (bin (make-temp-file "agent-hook-agy-bin-" t))
+           (rsr/agent-session-id->buffer (make-hash-table :test 'equal))
+           (rsr/agent-sessions (make-hash-table :test 'equal))
+           (rsr/agent-sessions--last-focused-buffer nil)
+           (rsr/agent-session-notify-on-attention nil)
+           rows)
+      (unwind-protect
+          (progn
+            (with-current-buffer term
+              (setq-local rsr/agent-session-id "term")
+              (setq default-directory (file-name-as-directory directory)))
+            (puthash "term" term rsr/agent-session-id->buffer)
+            ;; A stand-in emacsclient that keeps the form it was given.
+            (with-temp-file (expand-file-name "emacsclient" bin)
+              (insert (format "#!/bin/sh\nprintf '%%s' \"$3\" > %s\n"
+                              (expand-file-name "form" bin))))
+            (set-file-modes (expand-file-name "emacsclient" bin) #o755)
+            (cl-letf (((symbol-function 'rsr/agent-sessions--foreground-command)
+                       (lambda (_) "agy"))
+                      ((symbol-function 'rsr/agent-session--repo-info)
+                       (lambda (_) (list :repo "repo" :repo-root directory
+                                         :worktree-path directory)))
+                      ((symbol-function 'rsr/agent-sessions--detect-parent) #'ignore)
+                      ((symbol-function 'rsr/agent-sessions--log-update) #'ignore)
+                      ((symbol-function 'rsr/agent-orchestration--hydrate) #'ignore)
+                      ((symbol-function 'rsr/agent-orchestration-deliver) #'ignore)
+                      ((symbol-function 'rsr/agent-sessions--refresh-if-visible)
+                       #'ignore))
+              (dolist (event events)
+                (let* ((process-environment
+                        (append (list "EMACS_AGENT_SESSION_ID=term"
+                                      (format "PATH=%s:%s" bin (getenv "PATH")))
+                                process-environment))
+                       (form (progn
+                               (with-temp-buffer
+                                 (insert (format "{\"conversationId\": \"agy-cid\", \"workspacePaths\": [%S]}"
+                                                 directory))
+                                 (call-process-region (point-min) (point-max)
+                                                      "sh" t t nil script event))
+                               (with-temp-buffer
+                                 (insert-file-contents (expand-file-name "form" bin))
+                                 (buffer-string)))))
+                  (eval (car (read-from-string form)) t)
+                  (push (gethash "term" rsr/agent-sessions) rows))))
+            (nreverse rows))
+        (kill-buffer term)
+        (delete-directory directory t)
+        (delete-directory bin t)))))
+
+(ert-deftest rsr/agent-hook-agy-events-drive-the-row ()
+  "agy's own event names move its row like Claude's, keyed by conversationId."
+  (let ((rows (rsr/agent-hook-test--agy-events
+               '("SessionStart" "PreInvocation" "PostToolUse" "PreInvocation" "Stop"))))
+    (should (equal (mapcar (lambda (row) (plist-get row :status)) rows)
+                   '(stopped running running running needs-attention)))
+    (should (equal (plist-get (car (last rows)) :agent-type) "agy"))
+    (should (equal (plist-get (car (last rows)) :agent-session-id) "agy-cid"))
+    (should-not (plist-get (car (last rows)) :turn-open))))
+
+(ert-deftest rsr/agent-sessions-wire-agy-keeps-other-tools-hooks ()
+  (let* ((file (make-temp-file "agy-hooks-" nil ".json"))
+         (rsr/agent-sessions-agy-hooks-file file))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert "{\"orca-status\": {\"Stop\": [{\"command\": \"orca\"}]}}"))
+          (rsr/agent-sessions--wire-agy "/pkg/agent-sessions-agy-hook.sh")
+          (rsr/agent-sessions--wire-agy "/pkg/agent-sessions-agy-hook.sh")
+          (let* ((root (rsr/agent-sessions--read-json file))
+                 (ours (gethash "agent-sessions" root)))
+            (should (gethash "orca-status" root))
+            (should (equal (gethash "command" (aref (gethash "Stop" ours) 0))
+                           "/pkg/agent-sessions-agy-hook.sh Stop"))
+            (should (equal (gethash "matcher" (aref (gethash "PostToolUse" ours) 0))
+                           "*"))
+            (should (= (length (gethash "PreInvocation" ours)) 1)))
+          (should (rsr/agent-sessions--unwire-agy))
+          (let ((root (rsr/agent-sessions--read-json file)))
+            (should-not (gethash "agent-sessions" root))
+            (should (gethash "orca-status" root)))
+          (should-not (rsr/agent-sessions--unwire-agy)))
+      (delete-file file)
+      (dolist (backup (file-expand-wildcards (concat file "*")))
+        (delete-file backup)))))
+
+(ert-deftest rsr/agent-orchestration-agy-is-a-worker-type ()
+  (should (equal (rsr/agent-orchestration--launch-command
+                  (alist-get 'agy rsr/agent-orchestration-launch-commands)
+                  "/b/brief.md"
+                  (rsr/agent-orchestration--model-flag 'agy "gemini-x"))
+                 "agy --model gemini-x -i \"$(cat /b/brief.md)\"")))
+
 (provide 'agent-sessions-test)
 ;;; agent-sessions-test.el ends here
