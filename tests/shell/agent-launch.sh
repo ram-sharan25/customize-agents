@@ -30,6 +30,17 @@ run "$launch" --dry-run --top --agent agy --fork --skill review-plan --task "$ta
   && fail "agy fork: expected a failure"
 has "--fork is not supported for agy" "agy fork"
 
+# --model reaches each agent's own --model flag, before the first prompt.
+run "$launch" --dry-run --top --agent pi --model "ollama/qwen:7b" --skill review-plan --task "$task" --cwd "$tmp" \
+  || fail "pi model: exit $?"
+has "command: pi -n 'review-plan' --model 'ollama/qwen:7b' '/skill:review-plan $task/'" "pi model"
+run "$launch" --dry-run --top --agent agy --model "gemini-x" --skill review-plan --task "$task" --cwd "$tmp" \
+  || fail "agy model: exit $?"
+has "command: agy --model 'gemini-x' -i '/review-plan $task/'" "agy model"
+run "$launch" --dry-run --top --agent claude --skill review-plan --task "$task" --cwd "$tmp" \
+  || fail "no model: exit $?"
+lacks "--model" "no model"
+
 # Machine preference applies only when --agent is omitted, and reaches children.
 run env AGENT_DEFAULT=pi "$launch" --dry-run --top --skill review-plan --task "$task" --cwd "$tmp" \
   || fail "configured Pi: exit $?"

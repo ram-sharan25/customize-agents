@@ -3,7 +3,8 @@
 #
 #   open-window.sh --agent claude|pi --slug SLUG --dir OUTDIR
 #                  [--cwd DIR] [--fork] [--session-file FILE] [--no-focus]
-#                  [--name WINDOW-NAME] [--env KEY=VALUE]... [--dry-run]
+#                  [--name WINDOW-NAME] [--env KEY=VALUE]... [--model MODEL]
+#                  [--dry-run]
 #
 #   --dir           the exploration directory; OUTDIR/brief.md must exist and
 #                   becomes the child's first prompt
@@ -14,6 +15,7 @@
 #                             branch copy the pi extension wrote)
 #   --no-focus      leave the current window selected (tmux new-window -d)
 #   --env           extra variables for the child (repeatable)
+#   --model         run the child on MODEL (default: the agent's own)
 #   --dry-run       print the command and environment; open nothing
 #
 # A thin wrapper over the workflow's core launcher,
@@ -27,7 +29,7 @@
 set -eu
 
 die() { printf 'open-window: %s\n' "$1" >&2; exit "${2:-1}"; }
-usage() { sed -n '2,17p' "$0" | sed -e 's/^# \{0,1\}//' >&2; }
+usage() { sed -n '2,19p' "$0" | sed -e 's/^# \{0,1\}//' >&2; }
 
 # The skill directory is linked into each harness; resolve the real one.
 here=$(cd -- "$(dirname -- "$0")" && pwd -P)
@@ -44,7 +46,7 @@ while [ $# -gt 0 ]; do
     --cwd) cwd=${2:-}; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     --fork|--no-focus|--focus|--dry-run) rest="$rest $1"; shift ;;
-    --session-file|--name|--env)
+    --session-file|--name|--env|--model)
       [ $# -ge 2 ] || die "$1 needs a value" 2
       rest="$rest $1 $(printf '%s' "$2" | sed "s/'/'\\\\''/g; s/^/'/; s/\$/'/")"; shift 2 ;;
     *) die "unknown option: $1" 2 ;;

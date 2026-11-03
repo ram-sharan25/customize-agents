@@ -102,7 +102,10 @@ agent-launch --child --skill <skill> --task <task folder> \
    the author thinks of the work.
 2. `agent-launch` refuses (exit 2) outside tmux and Emacs; tell the user and
    do nothing else.
-3. Tell the user in two lines what opened and where its findings will land.
+3. When the user names an agent or a model for the child, add `--agent
+   claude|pi|agy` and `--model <name>` as given. Otherwise leave both off: the
+   machine's default agent runs on its own default model.
+4. Tell the user in two lines what opened and where its findings will land.
    Then stop watching it.
 
 The child, when its work is done (a review), or when the user says "report
@@ -244,7 +247,8 @@ agent-launch --top --skill <skill> --task <task folder> \
   --title "<skill>: <task name>" --no-focus
 ```
 
-Do not pass `--cwd`. The launcher opens the session in the task folder, where
+The same `--agent` and `--model` apply when the user names them. Do not pass
+`--cwd`. The launcher opens the session in the task folder, where
 the dashboard's own `C-c i w` keys open it, and the dashboard then files it
 with this session: in the same repo group and in this session's folder. A
 `--cwd` taken from `#+implementation-repository:` moves the row to that

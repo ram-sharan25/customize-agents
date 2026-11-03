@@ -76,6 +76,9 @@ files, optional slug / task_dir / fork / focus / start_now). It does steps
    ```
    ${CLAUDE_SKILL_DIR}/scripts/open-window.sh --agent claude --slug <slug> --dir "$DIR" [--fork] [--no-focus]
    ```
+   When the user names an agent or a model for the child, pass `--agent
+   claude|pi|agy` and `--model <name>` as given; otherwise leave `--model` off
+   so the agent runs on its own default.
    It refuses (exit 2) when this session is not inside tmux; tell the user
    and do nothing else. Its `via:` line says whether Emacs or plain tmux
    opened the window; a note on stderr explains a fallback. Either is fine.

@@ -7,7 +7,7 @@
 #                [--agent claude|pi|agy] [--top | --child] [--parent TERMINAL-ID]
 #                [--slug SLUG --dir OUTDIR] [--cwd DIR] [--name WINDOW]
 #                [--title TITLE] [--attach FILE] [--attach-label LABEL]
-#                [--fork] [--session-file FILE]
+#                [--fork] [--session-file FILE] [--model MODEL]
 #                [--no-focus] [--env KEY=VALUE]... [--dry-run]
 #
 #   --skill        first prompt is the skill's command with the task folder:
@@ -22,6 +22,7 @@
 #   --slug/--dir   the child's short name and output directory (findings go
 #                  there); required with --child
 #   --title        the dashboard row's title; --attach a file to show under it
+#   --model        run the agent on MODEL (its own --model flag)
 #   --dry-run      print what would be run and open nothing
 #
 # A child's report-back variables keep the EXPLORE_ prefix: explore-session's
@@ -41,7 +42,7 @@
 set -eu
 
 die() { printf 'agent-launch: %s\n' "$1" >&2; exit "${2:-1}"; }
-usage() { sed -n '6,26p' "$0" | sed -e 's/^# \{0,1\}//' >&2; }
+usage() { sed -n '6,27p' "$0" | sed -e 's/^# \{0,1\}//' >&2; }
 # Single-quote STRING for a POSIX shell.
 shq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
@@ -50,6 +51,7 @@ shq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 skill=""; prompt_file=""; task=""; brief=""; agent=${AGENT_DEFAULT:-claude}; mode=top
 parent_id=${EMACS_AGENT_SESSION_ID:-}; slug=""; dir=""; cwd=""; name=""
 title=""; attach=""; attach_label=""; fork=""; session_file=""; focus=1; dry_run=""
+model=""
 envs=""   # newline-separated KEY=VALUE
 
 while [ $# -gt 0 ]; do
@@ -71,6 +73,7 @@ while [ $# -gt 0 ]; do
     --attach-label) attach_label=${2:-}; shift 2 ;;
     --fork) fork=1; shift ;;
     --session-file) session_file=${2:-}; shift 2 ;;
+    --model) model=${2:-}; shift 2 ;;
     --no-focus) focus=""; shift ;;
     --focus) focus=1; shift ;;
     --env) envs="$envs
@@ -138,29 +141,32 @@ prompt_expr() {
 
 agent_command() {
   p=$(prompt_expr)
+  # Every agent spells it the same; it goes before the first prompt.
+  m=""
+  [ -z "$model" ] || m="--model $(shq "$model") "
   case "$agent" in
     claude)
       if [ -n "$fork" ]; then
         [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] ||
           die "--fork for claude needs \$CLAUDE_CODE_SESSION_ID (run from the parent's Bash tool)"
-        printf 'claude --resume %s --fork-session -n %s %s' \
-          "$(shq "$CLAUDE_CODE_SESSION_ID")" "$(shq "$name")" "$p"
+        printf 'claude --resume %s --fork-session -n %s %s%s' \
+          "$(shq "$CLAUDE_CODE_SESSION_ID")" "$(shq "$name")" "$m" "$p"
       else
-        printf 'claude -n %s %s' "$(shq "$name")" "$p"
+        printf 'claude -n %s %s%s' "$(shq "$name")" "$m" "$p"
       fi ;;
     pi)
       if [ -n "$fork" ]; then
         [ -n "$session_file" ] && [ -s "$session_file" ] ||
           die "--fork for pi needs --session-file FILE (the branch copy the extension writes)"
-        printf 'pi --session %s -n %s %s' "$(shq "$session_file")" "$(shq "$name")" "$p"
+        printf 'pi --session %s -n %s %s%s' "$(shq "$session_file")" "$(shq "$name")" "$m" "$p"
       else
-        printf 'pi -n %s %s' "$(shq "$name")" "$p"
+        printf 'pi -n %s %s%s' "$(shq "$name")" "$m" "$p"
       fi ;;
     agy)
       # agy has no fork and no session name flag; -i runs the first prompt
       # and keeps the session open.
       [ -z "$fork" ] || die "--fork is not supported for agy" 2
-      printf 'agy -i %s' "$p" ;;
+      printf 'agy %s-i %s' "$m" "$p" ;;
   esac
 }
 cmd=$(agent_command) || exit 1
